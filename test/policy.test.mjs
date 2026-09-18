@@ -173,3 +173,31 @@ test('a stable proposal is only accepted when it is verifiably not a blunder',()
   const risky=card(1,'羽化: 在你的抽牌堆中加入3张随机攻击牌。 消耗。',"Skill");
   assert.equal(verifyStableProposal(quiet,[risky,endTurn],risky).ok,false);
 });
+
+test('a kill line needs one distinct card per enemy and enough energy',()=>{
+  const hand=[{index:0,cost:'1'},{index:1,cost:'1'},{index:2,cost:'2'}];
+  const two=state({player:{hp:60,block:0,energy:1,hand},
+    battle:{enemies:[enemy({entity_id:'E_0',hp:6}),enemy({entity_id:'E_1',combat_id:2,hp:6})]}});
+  const strike=(card_index,target)=>card(card_index,'打击: 造成6点伤害。',{command:{target}});
+  // Two enemies, one energy: the same card cannot be spent twice, so this is not
+  // a deterministic kill and the program must not claim one.
+  const starved=localPolicy(two,[strike(0,'E_0'),strike(0,'E_1'),strike(1,'E_1'),endTurn]);
+  assert.notEqual(starved.kind,'kill');
+  // Two energy and two distinct cards: the arithmetic is settled.
+  const funded=state({player:{hp:60,block:0,energy:2,hand},
+    battle:{enemies:[enemy({entity_id:'E_0',hp:6}),enemy({entity_id:'E_1',combat_id:2,hp:6})]}});
+  const decided=localPolicy(funded,[strike(0,'E_0'),strike(1,'E_1'),endTurn]);
+  assert.equal(decided.kind,'kill');
+  assert.deepEqual(decided.options.map(o=>o.command.card_index).sort(),[0,1]);
+  assert.equal(decided.evidence.cost,2);
+  assert.equal(decided.evidence.energy,2);
+});
+
+test('needed damage is hp minus block, so a small hit is not a kill',()=>{
+  // 6 HP behind 4 block needs 2 damage to remove: a 6-damage hit is a kill, a
+  // 1-damage hit is not, and the program must tell them apart.
+  const shielded=()=>state({player:{hp:60,block:0,energy:3,hand:[{index:0,cost:'1'}]},
+    battle:{enemies:[enemy({hp:6,block:4})]}});
+  assert.equal(localPolicy(shielded(),[card(0,'打击: 造成6点伤害。'),endTurn]).kind,'kill');
+  assert.notEqual(localPolicy(shielded(),[card(0,'戳刺: 造成1点伤害。'),endTurn]).kind,'kill');
+});

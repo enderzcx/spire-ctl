@@ -106,8 +106,26 @@ test('provider cannot inject commands and receives only explicit state/options',
   let body;const options=actions(s());
   const fake=async(_url,init)=>{body=JSON.parse(init.body);return{ok:true,json:async()=>({answers:{next:{choice:'not-an-option',confidence:1}}})};};
   await assert.rejects(choose(s(),options,{apiKey:'fake-test-key',fetcher:fake}),/Invalid/);
-  assert.equal(body.state.player.hp,40);assert.equal(JSON.stringify(body).includes('fake-test-key'),false);
+  // body.state is the whole projection: a nested `state` plus the advertised
+  // options and, when one is in force, the agreed strategy.
+  const payload=body.state;
+  assert.ok(payload?.state,'request must carry a state projection');
+  // The model sees a filtered projection with the program's computed numbers and
+  // the advertised options, never a raw game payload, never a command, never the
+  // credential.
+  assert.equal(payload.state.computed.hp,40);
+  assert.equal(payload.state.computed.energy,3);
+  assert.equal(payload.state.computed.incoming_attack_total,5);
+  assert.equal(payload.state.enemies[0].id,'E_0');
+  assert.equal(payload.state.hand[0].id,'STRIKE');
+  assert.equal(payload.state.hand[0].known,true);
+  assert.equal(payload.options[0].action,'play_card');
+  assert.equal(payload.options.some(option=>option.command!==undefined),false);
+  assert.equal(JSON.stringify(body).includes('fake-test-key'),false);
+  assert.equal(JSON.stringify(body).includes('"command"'),false);
+  assert.equal(body.questions.next.type,'choice');
 });
+
 test('menu options expose the supported new-run path and refuse destructive ones',()=>{
   const main={state_type:'menu',menu_screen:'main',options:['continue','abandon_run','singleplayer','multiplayer','compendium','timeline','settings','quit']};
   assert.deepEqual(actions(main).map(a=>a.command.option),['continue','singleplayer','compendium','settings']);

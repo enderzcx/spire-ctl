@@ -3,6 +3,7 @@ import {join} from 'node:path';
 import {actions,inCombat,route,stateId,incomingDamage} from './game.mjs';
 import {localPolicy,nextLocalPlay,verifyStableProposal} from './policy.mjs';
 import {loadStrategy,strategyApplies,strategyPreference,seenHandoff,noteHandoff} from './strategy.mjs';
+import {mechanicalPlan} from './mechanical.mjs';
 
 export function envelope(state){
   const options=actions(state),incoming=inCombat(state)?incomingDamage(state):null;
@@ -49,15 +50,29 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
   if(!Number.isInteger(max)||max<1||max>100)throw Error('max must be 1..100');
   let s=await game.settled(),tokens=0,steps=0;const room=JSON.stringify(s.run);
   const openingStep=steps;
+  // A strategy agreed at a previous takeover is loaded once and re-checked on
+  // every step against the live state.
+  const agreed=await loadStrategy(dir);
   for(;steps<max;steps++){
     const env=envelope(s);
     const actedThisTurn=steps>openingStep;
     if(!inCombat(s)||JSON.stringify(s.run)!==room)return {reason:'left_combat',steps,...env};
-    if(env.route.kind==='planner')return {reason:env.route.reason,steps,...env};
+    // A guard (low HP, lethal-incoming threshold) is the program's own
+    // threshold, not a new decision, so an agreed strategy may carry the loop
+    // through it. A strategic route always returns to the caller.
+    const carried=agreed&&env.route.kind==='planner'&&env.route.strategic===false
+      &&strategyApplies(agreed,s).ok?strategyPreference(agreed,env.options):null;
+    if(env.route.kind==='planner'&&!carried)return {reason:env.route.reason,steps,...env};
     if(env.route.kind==='wait')throw Error('Unexpected busy state');
     if(tokens>=100000)return {reason:'token_budget',steps,...env};
     const start=performance.now();let option=env.route.option,source='deterministic',local=null;
-    if(env.route.kind==='jev'){
+    // The agreed strategy outranks the fast model while it still applies: that is
+    // what keeps a decided fight running without a round trip per card.
+    if(!option&&carried){option=carried.option;source='local';
+      local={kind:'strategy',reason:`Strategy ${agreed.strategy_id}: ${carried.preference.why??carried.preference.match}`,
+        evidence:{strategy_id:agreed.strategy_id,conditions:agreed.conditions.length,
+          expiry:agreed.expires_on?.length??0}};}
+    if(!option&&env.route.kind==='jev'){
       // The program decides only what the arithmetic already settled: an exact
       // lethal line, or the only play that survives displayed lethal damage.
       // Displayed lethal damage that this hand cannot block is a real planner
@@ -94,18 +109,6 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
       // A previously agreed strategy keeps the loop running without another
       // round trip, but only while its explicit conditions still hold and only
       // against options this state actually advertises.
-      if(!option){
-        const saved=await loadStrategy(dir);
-        if(saved){
-          const applies=strategyApplies(saved,s);
-          const picked=applies.ok?strategyPreference(saved,env.options.filter(o=>o.command.action!=='use_potion')):null;
-          if(picked){
-            option=picked.option;source='local';
-            local={kind:'strategy',reason:`Strategy ${saved.strategy_id}: ${picked.preference.why??picked.preference.match}`,
-              evidence:{strategy_id:saved.strategy_id,conditions:saved.conditions.length}};
-          }
-        }
-      }
       if(!option){
         // A model call needs a real question. One playable card plus "end turn",
         // or an empty hand, is not a choice: asking anyway costs 0.6-1.2s and
@@ -177,6 +180,26 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
     const next=await execute(game,env.state_id,option.id,{dir,control,record,source});
     await record({event:'cycle',source,total_ms:Math.round(performance.now()-start),action_ms:next.action_ms});
     s=next.state;
+  }
+  return {reason:'step_budget',steps,...envelope(s)};
+}
+
+// Mechanical progress: claim what is free, click what is fixed, stop at the
+// first screen that actually needs a decision. No model is asked, and nothing
+// risky is guessed - if a step is not clearly mechanical this returns with the
+// live envelope so a caller can decide.
+export async function advance(game,{dir,control=dir,max=20,record=recorder(dir)}={}){
+  if(!Number.isInteger(max)||max<1||max>50)throw Error('max must be 1..50');
+  let s=await game.settled(),steps=0;
+  for(;steps<max;steps++){
+    const options=actions(s),plan=mechanicalPlan(s,options);
+    if(!plan)return {reason:'needs_decision',steps,...envelope(s)};
+    const option=plan.options[0];
+    const next=await execute(game,stateId(s),option.id,{dir,control,record,source:'mechanical'});
+    await record({event:'mechanical_step',source:'mechanical',reason:plan.reason,
+      action:option.command.action,state_type:s.state_type});
+    s=next.state;
+    if(inCombat(s))return {reason:'combat_started',steps:steps+1,...envelope(s)};
   }
   return {reason:'step_budget',steps,...envelope(s)};
 }

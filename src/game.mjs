@@ -109,13 +109,19 @@ export function incomingDamage(s) {
   return total;
 }
 
+// A route can be a safety guard (a threshold the program applies to itself) or
+// a genuinely new decision. `strategic` marks the difference so an already
+// agreed strategy can keep the loop running through a guard, while new
+// mechanics, unknown intents and real lethal danger still stop it.
 export function route(s,options=actions(s)) {
-  if(!inCombat(s))return {kind:'planner',reason:`${s.state_type}: progression/build decision`};
+  if(!inCombat(s))return {kind:'planner',strategic:true,reason:`${s.state_type}: progression/build decision`};
   if(!s.battle.ready_for_action)return {kind:'wait',reason:'Game busy'};
-  if(s.player.hp<=Math.max(15,s.player.max_hp*.3))return {kind:'planner',reason:'Low HP: reassess survival and potions'};
+  if(s.player.hp<=Math.max(15,s.player.max_hp*.3))return {kind:'planner',strategic:false,
+    guard:'low_hp',reason:'Low HP: reassess survival and potions'};
   const incoming=incomingDamage(s);
-  if(incoming===null)return {kind:'planner',reason:'Unrecognized attack intent'};
-  if(incoming-s.player.block>=s.player.hp)return {kind:'planner',reason:'Potential lethal incoming damage'};
+  if(incoming===null)return {kind:'planner',strategic:true,reason:'Unrecognized attack intent'};
+  if(incoming-s.player.block>=s.player.hp)return {kind:'planner',strategic:false,
+    guard:'lethal_incoming',reason:'Potential lethal incoming damage'};
   const cards=options.filter(o=>o.command.action==='play_card');
   if(!cards.length) {
     if(options.some(o=>o.command.action==='use_potion') && incoming-s.player.block>=Math.max(8,s.player.hp*.25))return {kind:'planner',reason:'Assess potion before significant damage'};

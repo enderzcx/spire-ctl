@@ -1,19 +1,27 @@
 // Fast tactical model adapter. The program stays in charge of legality and of
 // everything that can be computed: this module only turns a state plus the
 // advertised options into one of those options.
+import {buildInput,NEXT_ACTION_INSTRUCTIONS} from './input.mjs';
+
 export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,fetcher=fetch,signal,
-  shortlist=null,criteria:providedCriteria=null}={}) {
+  shortlist=null,criteria:providedCriteria=null,effects={},providedInput=null}={}) {
   if(!apiKey)throw Error('TYPESAFE_API_KEY is missing');
   if(!options.length)throw Error('No options offered; the caller must not ask for a choice');
-  const criteria=providedCriteria??Object.fromEntries(options.map(o=>[o.id,o.label]));
-  const p=state.player;
-  const input={battle:state.battle,player:{hp:p.hp,max_hp:p.max_hp,block:p.block,energy:p.energy,
-    hand:p.hand,status:p.status,orbs:p.orbs,orb_slots:p.orb_slots,relics:p.relics,draw_pile:p.draw_pile,discard_pile:p.discard_pile}};
-  const instructions='Choose the best next action to survive and win this Slay the Spire 2 combat. Prioritize guaranteed lethal damage. Account for enemy intents, vulnerable/weak, block, energy, setup and draw. Do not waste energy on redundant defense or end turn with useful cards remaining.';
+  // A filtered, English, semantically-labelled state: jev-1.13 reads literal
+  // conditions and English better than dense Chinese numeric text, and the
+  // documentation warns that irrelevant detail harms the judgment. The game UI
+  // is untouched; this is only what the question needs.
+  const input=providedInput??buildInput(state,options,{store:effects});
+  // Criteria come from the filtered projection, not from the raw options, so the
+  // request never carries an executable command surface.
+  const criteria=providedCriteria??Object.fromEntries(input.options.map(option=>[option.id,option.label]));
+  const instructions=NEXT_ACTION_INSTRUCTIONS;
   const started=performance.now();
   async function ask(menu=criteria){
     const res=await fetcher('https://api.typesafe.ai/v1/systemone',{method:'POST',
       headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'},
+      // `state` carries the game projection plus the advertised options (with
+      // their computed numbers). All questions in the request see this one state.
       body:JSON.stringify({model:'jev-latest',state:input,questions:{next:{type:'choice',instructions,criteria:menu}}}),
       signal:signal?AbortSignal.any([signal,AbortSignal.timeout(8000)]):AbortSignal.timeout(8000)});
     if(!res.ok)throw Error(`Jev returned HTTP ${res.status}; no action sent`);
@@ -22,7 +30,16 @@ export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,
     return {option:options.find(o=>o.id===answer.choice),answer,model:result.model,usage:result.usage};
   }
   let requests=0;
-  const askCounted=async menu=>{requests++;return ask(menu);};
+  // Every request of this decision is billed, so usage is accumulated rather
+  // than overwritten: the narrowed retry and the stability probe both cost.
+  const usage={input_tokens:0,output_tokens:0};
+  const askCounted=async menu=>{
+    requests++;
+    const result=await ask(menu);
+    usage.input_tokens+=Number(result.usage?.input_tokens??0);
+    usage.output_tokens+=Number(result.usage?.output_tokens??0);
+    return result;
+  };
   const first=await askCounted(criteria);
   let answer=first;
 
@@ -51,6 +68,6 @@ export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,
       second_confidence:probe.answer.confidence,model:probe.model??answer.model};
   }
 
-  return {...answer,requests,inference_ms:Math.round(performance.now()-started),
+  return {...answer,requests,usage,inference_ms:Math.round(performance.now()-started),
     retried:Boolean(answer.narrowed),narrowed:Boolean(answer.narrowed),stable:answer.stable??false};
 }

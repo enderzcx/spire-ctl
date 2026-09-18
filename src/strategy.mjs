@@ -60,6 +60,11 @@ export function strategyPreference(strategy,options){
     const option=options.find(candidate=>String(candidate.label??'').includes(pattern));
     if(option)return {option,preference};
   }
+  // Ending the turn is mechanical: nothing about the strategy can make it wrong,
+  // and refusing it would stall the loop on an empty hand. It is therefore the
+  // implicit last preference, and a strategy never has to spell it out.
+  const endTurn=options.find(candidate=>candidate.command?.action==='end_turn');
+  if(endTurn)return {option:endTurn,preference:{match:'end turn',why:'nothing else is playable; close the turn'}};
   return null;
 }
 

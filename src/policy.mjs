@@ -90,7 +90,7 @@ function lethalOptions(state,options){
     const needed=Math.max(0,target.hp-target.block);
     if(damage<needed)continue;
     const list=byTarget.get(target.entity_id)??[];
-    list.push({option,damage,overkill:damage-needed});
+    list.push({option,damage,overkill:damage-needed,card_index:option.command?.card_index});
     byTarget.set(target.entity_id,list);
   }
   return byTarget;
@@ -129,6 +129,36 @@ export function guardOption(state,options,attacks=incomingAttacks(state)){
     option:entry.option,evidence:{incoming:attacks.total,block,hp,gap}};
 }
 
+// One distinct card per living enemy, inside the energy budget. Returning null
+// is the honest answer when the cards or the energy do not actually cover the
+// board; a fake "deterministic" kill would be worse than asking the model.
+function affordableKillLine(state,living,lethal){
+  const energy=Number(state.player?.energy??0);
+  const eligible=living.map(enemy=>({enemy,list:lethal.get(enemy.entity_id)??[]}));
+  if(eligible.some(entry=>!entry.list.length))return null;
+  // Fewest options first, so a scarce target is not starved by a greedy sibling.
+  eligible.sort((a,b)=>a.list.length-b.list.length);
+  const used=new Set(),chosen=[];
+  let cost=0;
+  for(const {list} of eligible){
+    const pick=list.filter(entry=>energyOf(state,entry)!==null&&!used.has(entry.card_index))
+      .sort((a,b)=>energyOf(state,a)-energyOf(state,b)||a.overkill-b.overkill)[0];
+    if(!pick)return null;
+    used.add(pick.card_index);
+    chosen.push(pick);
+    cost+=energyOf(state,pick);
+  }
+  return cost>energy?null:{chosen,cost,energy};
+}
+
+// Advertised options can state a cost; when the label does not, fall back to the
+// card's own cost from the state hand.
+function energyOf(state,entry){
+  const card=(state.player?.hand??[]).find(c=>c.index===entry.card_index);
+  const cost=Number(card?.cost);
+  return isNum(cost)?cost:0;
+}
+
 // Decide locally only when the arithmetic leaves one defensible action:
 //   1. finish: the displayed attacks cover every living enemy (a kill needs no
 //      defense that turn),
@@ -146,22 +176,16 @@ export function localPolicy(state,options){
   const lethal=lethalOptions(state,options);
   const blockers=blockOptions(options);
 
-  // 1. Finish: displayed attacks cover every living enemy. Killing needs no
-  //    defense that turn, so this is settled arithmetic rather than a preference.
-  const totalLife=living.reduce((sum,enemy)=>sum+enemy.hp+enemy.block,0);
-  const killable=[...lethal.values()].reduce((sum,list)=>sum+Math.max(...list.map(entry=>entry.damage)),0);
-  const canKillAll=[...lethal.keys()].length===living.length&&killable>=totalLife;
-  if(canKillAll){
-    const chosen=[];
-    for(const entityId of lethal.keys()){
-      const pick=cheapest(lethal.get(entityId));
-      if(pick)chosen.push(pick);
-    }
-    if(chosen.length===living.length){
-      const order=[...chosen].sort((a,b)=>a.overkill-b.overkill);
-      return {kind:'kill',reason:`Displayed attacks cover all ${living.length} living enemies`,
-        options:order.map(entry=>entry.option),evidence:{incoming:attacks.total,life:totalLife}};
-    }
+  // 1. Finish: displayed attacks cover every living enemy with distinct cards
+  //    inside the energy budget. Killing needs no defense that turn, so this is
+  //    settled arithmetic rather than a preference. The same original card must
+  //    never be counted twice for two targets, and the line must be affordable.
+  const killLine=affordableKillLine(state,living,lethal);
+  if(killLine){
+    const order=[...killLine.chosen].sort((a,b)=>a.overkill-b.overkill);
+    return {kind:'kill',reason:`Displayed attacks cover all ${living.length} living enemies`,
+      options:order.map(entry=>entry.option),
+      evidence:{incoming:attacks.total,cost:killLine.cost,energy:killLine.energy}};
   }
 
   // 2. Survive: the displayed attack kills us and exactly one play prevents it.

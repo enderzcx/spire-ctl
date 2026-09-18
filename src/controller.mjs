@@ -2,7 +2,7 @@ import {resolve,join} from 'node:path';
 import {homedir} from 'node:os';
 import {access,rm} from 'node:fs/promises';
 import {createGame,stateId} from './game.mjs';
-import {envelope,withLock,execute,battle} from './runner.mjs';
+import {envelope,withLock,execute,battle,advance} from './runner.mjs';
 import {runPlan,projection} from './plan.mjs';
 import {choose} from './jev.mjs';
 
@@ -29,6 +29,8 @@ export function createController({endpoint=process.env.SPIRE_API_URL??'http://12
     // without a provider; production keeps the real adapter.
     battle:(max=60,{signal}={})=>mutate(signal,(g,opts)=>battle(g,(s,o,shortlist)=>decide(s,o,{apiKey,signal,shortlist}),{...opts,max})),
     plan:(plan,{signal}={})=>mutate(signal,(g,opts)=>runPlan(g,plan,opts)),
+    // Mechanical progress only: free claims, fixed buttons, then stop.
+    advance:(max=20,{signal}={})=>mutate(signal,(g,opts)=>advance(g,{...opts,max})),
     clearHalt:(expected,{signal}={})=>mutate(signal,async g=>{
       const s=await g.read();if(stateId(s)!==expected)throw Error('State changed');
       await rm(join(control,'HALTED'),{force:true});return{cleared:true,...envelope(s)};

@@ -97,3 +97,62 @@ test('the battle loop records a handover and blocks the second ask on that state
     assert.equal(takeovers[1].repeat_count,2);
   }finally{await rm(dir,{recursive:true,force:true});}
 });
+
+test('an agreed strategy carries the loop through a safety guard, not past a new decision',async()=>{
+  const {battle}=await import('../src/runner.mjs');
+  const {route}=await import('../src/game.mjs');
+  const {mkdtemp,rm,readFile}=await import('node:fs/promises');
+  const {tmpdir}=await import('node:os');
+  const {join}=await import('node:path');
+  const dir=await mkdtemp(join(tmpdir(),'spire-carry-'));
+  const card=(i,label,type='Attack')=>({id:`C${i}`,index:i,name:label.slice(0,2),type,cost:'1',
+    target_type:type==='Attack'?'AnyEnemy':'Self',can_play:true,unplayable_reason:null,description:label,
+    keywords:[],is_upgraded:false,rarity:'Common',star_cost:null});
+  const lowHp={state_type:'monster',run:{act:1,floor:11},player:{hp:12,max_hp:80,block:0,energy:3,
+    hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','Skill')],potions:[]},
+    battle:{ready_for_action:true,round:2,turn:'player',action_running:false,action_queue_empty:true,
+      enemies:[{entity_id:'E_0',combat_id:1,name:'E',hp:30,max_hp:30,block:0,status:[],
+        intents:[{type:'Attack',label:'8',title:'攻势'}]}]}};
+  const after={state_type:'rewards',rewards:{items:[],can_proceed:true},run:lowHp.run,player:lowHp.player};
+  try{
+    // Without a strategy the low-HP guard returns to the caller.
+    const guarded={read:async()=>lowHp,settled:async()=>lowHp,send:async()=>({status:'ok'})};
+    const blocked=await battle(guarded,async()=>({option:{id:'0'},answer:{confidence:.9}}),{dir});
+    assert.equal(blocked.reason,'Low HP: reassess survival and potions');
+    assert.equal(route(lowHp).strategic,false);
+
+    // With an agreed strategy whose conditions hold, the loop continues locally.
+    await saveStrategy(dir,{strategy_id:'low-hp-1',created_state_id:'x',reason:'keep chipping',
+      conditions:[{kind:'same_floor',act:1,floor:11},{kind:'hp_at_least',value:5}],
+      expires_on:[{kind:'enemy_count_at_most',value:0}],
+      order:[{match:'打击',why:'chip'}]});
+    let sends=0,modelCalls=0;
+    const carried={read:async()=>sends?after:lowHp,settled:async()=>sends?after:lowHp,
+      send:async()=>{sends++;return{status:'ok'};}};
+    const result=await battle(carried,async()=>{modelCalls++;return{option:{id:'0'},answer:{confidence:.9}};},{dir,max:2});
+    assert.equal(sends,1,'the strategy issued the play');
+    assert.equal(modelCalls,0,'no model round trip was needed');
+    assert.equal(result.reason,'left_combat');
+    const rows=(await readFile(join(dir,'events.jsonl'),'utf8')).trim().split('\n').map(l=>JSON.parse(l));
+    assert.equal(rows.find(row=>row.event==='local_decision').kind,'strategy');
+
+    // A strategic route still returns: an unrecognized intent is a new decision.
+    const unknown={...lowHp,player:{...lowHp.player,hp:60},
+      battle:{...lowHp.battle,enemies:[{...lowHp.battle.enemies[0],intents:[{type:'Attack',label:'?'}]}]}};
+    assert.equal(route(unknown).strategic,true);
+    const stopped=await battle({read:async()=>unknown,settled:async()=>unknown,send:async()=>({status:'ok'})},
+      async()=>({option:{id:'0'},answer:{confidence:.9}}),{dir});
+    assert.equal(stopped.reason,'Unrecognized attack intent');
+  }finally{await rm(dir,{recursive:true,force:true});}
+});
+
+test('a strategy may close a turn it cannot otherwise act on',()=>{
+  const options=[{id:'0',command:{action:'end_turn'},label:'End turn'}];
+  const picked=strategyPreference(strategy(),options);
+  assert.equal(picked.option.command.action,'end_turn');
+  assert.match(picked.preference.why,/nothing else is playable/);
+  // A playable preference still outranks the implicit end turn.
+  const both=[{id:'1',command:{action:'play_card',card_index:0},label:'痛击: 造成8点伤害。'},
+    {id:'0',command:{action:'end_turn'},label:'End turn'}];
+  assert.equal(strategyPreference(strategy(),both).option.id,'1');
+});
