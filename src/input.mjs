@@ -7,7 +7,7 @@
 // numbers the program already computed, plus the exact condition the program
 // wants judged.
 import {describeCard,unknownCards} from './effects.mjs';
-import {incomingAttacks,optionBlock,optionDamage,optionTarget} from './policy.mjs';
+import {incomingAttacks,optionBlock,optionDamage,optionTarget} from './combat.mjs';
 
 const enemyView=enemy=>({
   id:enemy.entity_id,
@@ -91,5 +91,6 @@ export const NEXT_ACTION_INSTRUCTIONS=[
   'Prefer an action that removes a living enemy when the listed damage is enough to do it.',
   'Prefer covering the displayed incoming attack over taking it, unless the incoming damage is already fully blocked.',
   'Do not spend energy on an effect that is already satisfied this turn.',
+  'End turn is a real alternative when it is listed; one playable card is not an automatic play.',
   'If the strategy field is present, follow it while it applies; ignore options that contradict it.'
 ].join(' ');

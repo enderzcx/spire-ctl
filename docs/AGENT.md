@@ -55,13 +55,13 @@ round trip per card. The contract is explicit and checked on every step:
 ```
 
 Supported condition kinds: `hp_at_least`, `hp_at_most`, `same_floor`,
-`enemy_count_at_most`, `same_enemies`, `intents_unchanged`. Anything else is
-treated as unsatisfied, so an unreadable strategy simply does nothing. The
-`order` entries match advertised option labels; the program re-binds them to the
-options the live state actually offers, still validates legality through the
-normal execution path, and stops the moment a condition fails or an expiry
-condition fires. New enemies, changed intents, a new floor or a broken HP floor
-therefore return control automatically instead of being papered over.
+`same_run`, `enemy_count_at_most`, `same_enemies`, `intents_unchanged`. Unknown
+condition or expiry kinds fail closed. A strategy must carry a run identity from
+the live state; the same floor number on another run is not enough. The `order`
+entries match advertised option labels and only constrain legal options. If
+nothing in the order matches while a card is still playable, the program does
+not end the turn. Save a strategy with `save-strategy` / `spire_save_strategy`
+rather than editing a file by hand.
 
 ## Mechanical progress and short plans
 
@@ -72,16 +72,14 @@ Two more decision shapes exist besides a single fast-model choice:
   and stops at the first screen that needs a decision. Gold, potion and chest
   claims are mechanical; a card reward, a route, a shop purchase, a rest-site
   choice and an event trade are decisions and are never taken by this command.
-- With `SPIRE_CANDIDATES=1`, a battle turn offers the fast model a small set of
-  verified candidate lines (a confirmed kill, a single known play, a block play,
-  or one two-step prefix) instead of one card at a time. Each candidate carries
-  the energy, damage, block, kill count and survival result the program computed.
-  One request asks the model to pick a line and, in the same batch, judges each
-  candidate on a single independent dimension. The program combines those
-  answers: survival is a hard constraint the model cannot override, an agreed
-  strategy outranks the ranking, and the model's own pick is honoured among the
-  surviving lines. Cards with effects the program cannot bound never join a
-  prefix.
+- A battle turn offers the fast model a small set of verified candidate lines
+  when at least two modeled prefixes exist. Each candidate carries the energy,
+  damage, block, kill count, survival result and expected state patch the
+  program computed. One request picks a line. A two-card line is one request
+  and two sequential verified sends through the same executor as `plan`. Survival
+  is a hard constraint the model cannot override. Unbounded, random, draw and
+  status-modifying later effects are not a deterministic prefix. Set
+  `SPIRE_CANDIDATES=0` to force single-action questions.
 
 The fast model's input is a filtered English projection (`src/input.mjs`): stable
 card ids with checked effects, the program's computed totals, the enemies'

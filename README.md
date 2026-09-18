@@ -21,7 +21,7 @@
 | 已知攻击能被一手牌完全挡下（无副作用） | 程序出牌 |
 | 本回合继续打数值与目标都明确的攻击牌 | 程序连续执行 |
 | 普通战斗中的下一手牌 | Jev |
-| Jev 低置信度但程序能给出候选 | Jev 收窄选项重问 |
+| Jev 低置信度 | 交回主模型；同一状态不再重问 |
 | 无牌可出且无需紧急考虑药水 | 程序结束回合 |
 | 新牌、路线、商店、事件、药水取舍 | 主模型 |
 | 可能致命的攻击无法挡下、陌生意图 | 主模型 |
@@ -120,19 +120,19 @@ node bin/spire.mjs act STATE_ID OPTION_ID
 ```sh
 node bin/spire.mjs state
 node bin/spire.mjs clear-halt STATE_ID
+node bin/spire.mjs save-strategy STRATEGY.json
 ```
 
 多个调用方可以读状态，但只能有一个游戏操作者。CLI 锁防止本项目的并发写入；它不能阻止用户或其他 Mod 直接操作游戏。试玩时请勿同时手动出牌。
 
 ## 工程说明
 
-- `src/game.mjs`：游戏接口、状态标识、动作列表和分工规则。
-- `src/policy.mjs`：程序侧算术与局部策略（斩杀线、保命、同回合连续执行）。
-- `src/jev.mjs`：独立 TypeSafe 适配器；要换快模型，保持返回所给选项即可。
-- `src/runner.mjs`：执行、读回、预算、暂停和记录。
-- `src/plan.mjs`：回合计划和逐步预期结果校验。
-- `src/metrics.mjs`：回合级指标（耗时分段、接管原因、计划长度），只读日志。
-- `bin/spire.mjs`：通用 JSON CLI，主模型不绑定任何厂商。
+- `src/combat.mjs`：已知/未知效果与结果推演的唯一算术。
+- `src/decision.mjs`：唯一战术入口（执行一张、执行前缀、或交回）。
+- `src/jev.mjs`：薄适配器，只发送、校验和记账。
+- `src/runner.mjs` 与 `src/plan.mjs`：单步与多卡前缀共用的已验证发送。
+- `src/strategy.mjs`：带 run identity 的显式续行；未匹配不会默认结束回合。
+- `bin/spire.mjs`：通用 JSON CLI，含 `save-strategy` / `strategy`。
 - `bridge/`：上游版本、许可证和兼容补丁。
 - `.runtime/`：私有实测记录与停止标记，默认不进入 Git。
 

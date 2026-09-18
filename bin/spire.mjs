@@ -19,7 +19,12 @@ async function main(){
     if(args.length!==1)throw Error('Read and inspect state, then clear-halt STATE_ID');
     return controller.clearHalt(args[0]);
   }
-  return {usage:['state','act STATE_ID OPTION_ID','plan PLAN.json','battle [MAX_STEPS]','advance [MAX_STEPS]','clear-halt STATE_ID'],
+  if(command==='save-strategy'){
+    if(args.length!==1)throw Error('Usage: save-strategy STRATEGY.json');
+    return controller.saveStrategy(JSON.parse(await readFile(args[0],'utf8')));
+  }
+  if(command==='strategy')return controller.strategy();
+  return {usage:['state','act STATE_ID OPTION_ID','plan PLAN.json','battle [MAX_STEPS]','advance [MAX_STEPS]','clear-halt STATE_ID','save-strategy STRATEGY.json','strategy'],
     note:'Read docs/AGENT.md before playing. advance only performs mechanical steps and stops at a decision.'};
 }
 main().then(r=>console.log(JSON.stringify(r,null,2))).catch(e=>{console.error(JSON.stringify({error:e.message}));process.exitCode=1;});

@@ -2,7 +2,7 @@ import {readFile,writeFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
 import {actions,inCombat,stateId,delay} from './game.mjs';
-import {envelope,recorder} from './runner.mjs';
+import {envelope,recorder,isRejectedReceipt} from './runner.mjs';
 
 // A plan predicts all strategically relevant fields. `expect` patches this
 // projection after each step; unspecified fields must remain unchanged.
@@ -78,7 +78,15 @@ export async function runPlan(game,plan,{dir,control=dir,record=recorder(dir),ti
       await record({event:'plan_verified',step:n,option,after:last,action_ms:Math.round(performance.now()-started)});
       await rm(join(control,'HALTED'));
       remaining.splice(index,1);predicted=projection(last);state=last;
-    }catch(e){await writeFile(join(control,'HALTED'),JSON.stringify({reason:e.message,step:n,option}));throw e;}
+    }catch(e){
+      if(isRejectedReceipt(e)){
+        await rm(join(control,'HALTED'));
+        await record({event:'plan_rejected',step:n,option,reason:e.message});
+        throw e;
+      }
+      await writeFile(join(control,'HALTED'),JSON.stringify({reason:e.message,step:n,option}));
+      throw e;
+    }
   }
   return {reason:'plan_complete',completed:plan.steps.length,...envelope(state)};
 }

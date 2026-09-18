@@ -5,6 +5,7 @@ import {createGame,stateId} from './game.mjs';
 import {envelope,withLock,execute,battle,advance} from './runner.mjs';
 import {runPlan,projection} from './plan.mjs';
 import {choose} from './jev.mjs';
+import {bindStrategy,saveStrategy,loadStrategy} from './strategy.mjs';
 
 // Shared public seam for CLI and harness plugins; no planner vendor dependency.
 export function createController({endpoint=process.env.SPIRE_API_URL??'http://127.0.0.1:15526/api/v1/singleplayer',
@@ -34,6 +35,16 @@ export function createController({endpoint=process.env.SPIRE_API_URL??'http://12
     clearHalt:(expected,{signal}={})=>mutate(signal,async g=>{
       const s=await g.read();if(stateId(s)!==expected)throw Error('State changed');
       await rm(join(control,'HALTED'),{force:true});return{cleared:true,...envelope(s)};
+    }),
+    saveStrategy:(strategy,{signal}={})=>mutate(signal,async(g,opts)=>{
+      const s=await g.read();
+      const prepared=bindStrategy(strategy,s);
+      await saveStrategy(opts.dir,prepared);
+      return {saved:true,strategy:prepared,...envelope(s)};
+    }),
+    strategy:({signal}={})=>mutate(signal,async(g,opts)=>{
+      const s=await g.read();
+      return {strategy:await loadStrategy(opts.dir,s),...envelope(s)};
     })
   };
 }

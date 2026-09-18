@@ -71,16 +71,11 @@ test('second writer cannot take the game lock',()=>temporary(async dir=>{
   await withLock(dir,async()=>{await assert.rejects(withLock(dir,async()=>{}),/Another controller/);});
   await withLock(dir,async()=>{});
 }));
-test('a lone playable card is executed without asking a model',()=>temporary(async dir=>{
-  // One card plus "end turn" is not a choice: asking costs a round trip and
-  // buys nothing, so the program plays it and records why.
+test('one playable card still competes with end turn, so the adapter is asked',()=>temporary(async dir=>{
   let sent=0,sends=0,decideCalls=0;const x=s(),after={state_type:'rewards',rewards:{items:[],can_proceed:true},run:x.run,player:x.player};
   const game={read:async()=>sends?after:x,settled:async()=>sends?after:x,send:async()=>{sends++;sent++;return{status:'ok'};}};
-  const r=await battle(game,async()=>{decideCalls++;return{option:actions(x)[0],answer:{confidence:.9}};},{dir,max:2});
-  assert.equal(decideCalls,0);assert.equal(sent,1);assert.equal(r.reason,'left_combat');
-  const local=(await readFile(join(dir,'events.jsonl'),'utf8')).trim().split('\n').map(l=>JSON.parse(l)).find(row=>row.event==='local_decision');
-  // Either local shape is acceptable here; what matters is that no model ran.
-  assert.ok(['sole_action','resolve'].includes(local.kind),`unexpected local kind ${local.kind}`);
+  const r=await battle(game,async(_st,offered)=>{decideCalls++;return{option:offered[0],answer:{confidence:.9},requests:1};},{dir,max:2});
+  assert.equal(decideCalls,1);assert.equal(sent,1);assert.equal(r.reason,'left_combat');
 }));
 
 test('low confidence over a real choice returns a planner packet',()=>temporary(async dir=>{
@@ -156,18 +151,16 @@ test('a finished run offers only the return to the main menu',()=>{
   assert.equal(list[0].command.option,'main_menu');
   assert.equal(actions({...over,game_over:{options:[]}}).length,0);
 });
-test('an action that provably changed nothing does not leave a halt',()=>temporary(async dir=>{
+test('an unchanged visible state after dispatch is unknown and cannot be resent',()=>temporary(async dir=>{
   const control=await mkdtemp(join(tmpdir(),'spire-control-'));
-  // Clicking an already-selected character is idempotent: the game is unchanged,
-  // so there is nothing to replay and the caller may choose differently.
   const x=s();
+  let sent=0;
   const game={read:async()=>x,settled:async()=>{throw Error('No settled state transition; do not repeat the action');},
-    send:async()=>({status:'ok'})};
+    send:async()=>{sent++;return{status:'ok'};}};
   try{
-    const result=await execute(game,stateId(x),'0',{dir,control});
-    assert.equal(result.no_state_change,true);
-    // The halt was cleared, so the next action is allowed.
-    await execute({...game,settled:async()=>x},stateId(x),'0',{dir,control});
+    await assert.rejects(execute(game,stateId(x),'0',{dir,control}),/No settled state transition/);
+    await assert.rejects(execute(game,stateId(x),'0',{dir,control}),/outcome unknown/);
+    assert.equal(sent,1);
   }finally{await rm(control,{recursive:true,force:true});}
 }));
 

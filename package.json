@@ -16,7 +16,7 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "check": "node --check bin/spire.mjs && node --check src/game.mjs && node --check src/policy.mjs && node --check src/strategy.mjs && node --check src/mechanical.mjs && node --check src/planning.mjs && node --check src/effects.mjs && node --check src/input.mjs && node --check src/runner.mjs && node --check src/jev.mjs && node --check src/plan.mjs && node --check src/metrics.mjs && node --check src/controller.mjs && node --check scripts/dsh.mjs && node --check scripts/summarize.mjs && node --check scripts/metrics-jsonl.mjs"
+    "check": "node --check bin/spire.mjs && node --check src/game.mjs && node --check src/combat.mjs && node --check src/decision.mjs && node --check src/policy.mjs && node --check src/strategy.mjs && node --check src/mechanical.mjs && node --check src/planning.mjs && node --check src/effects.mjs && node --check src/input.mjs && node --check src/runner.mjs && node --check src/jev.mjs && node --check src/plan.mjs && node --check src/metrics.mjs && node --check src/controller.mjs && node --check scripts/dsh.mjs && node --check scripts/summarize.mjs && node --check scripts/metrics-jsonl.mjs"
   },
   "repository": {
     "type": "git",

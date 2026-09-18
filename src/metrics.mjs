@@ -222,7 +222,7 @@ export function analyzeTurns(rows){
   }
 
   // Requests actually sent to the fast model (including narrowed retries and the
-  // stability probe), takeovers handed back to the planner with their reasons,
+  // counted requests), takeovers handed back to the planner with their reasons,
   // and steps executed under an agreed strategy. These are the counters the
   // review requires so a speed claim is not just a share of local cards.
   for(const row of rows){

@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {incomingAttacks,incomingDamage,localPolicy,nextLocalPlay,optionBlock,optionDamage,prefixPlan,intentDamage,verifyStableProposal,attritionRisk} from '../src/policy.mjs';
+import {incomingAttacks,incomingDamage,localPolicy,nextLocalPlay,optionBlock,optionDamage,prefixPlan,intentDamage,attritionRisk} from '../src/policy.mjs';
 
 const enemy=(overrides={})=>({entity_id:'E_0',combat_id:1,name:'Enemy',hp:20,max_hp:20,block:0,
   intents:[{type:'Attack',label:'6',title:'攻势'}],status:[],...overrides});
@@ -138,12 +138,9 @@ test('several playable cards are a tactical choice and go to the fast model',()=
   assert.equal(nextLocalPlay(s,options),null);
 });
 
-test('the only playable card is executed even when it is a skill',()=>{
+test('one playable card is not a forced action; end turn still competes',()=>{
   const s=state({player:{hp:60,block:0},battle:{enemies:[enemy({intents:[{type:'Attack',label:'12'}]})]}});
-  const next=nextLocalPlay(s,[card(0,'耸肩无视: 获得8点格挡。 抽1张牌。'),endTurn]);
-  assert.equal(next.kind,'resolve');
-  assert.match(next.reason,/only playable card/);
-  // A hidden cost still disqualifies it: the program does not gamble.
+  assert.equal(nextLocalPlay(s,[card(0,'耸肩无视: 获得8点格挡。 抽1张牌。'),endTurn]),null);
   assert.equal(nextLocalPlay(s,[card(0,'坚毅: 获得7点格挡。  随机消耗1张牌。'),endTurn]),null);
 });
 
@@ -160,18 +157,11 @@ test('a lethal single play is taken even with other cards in hand',()=>{
   assert.match(next.reason,/Finish the last living enemy/);
 });
 
-test('a stable proposal is only accepted when it is verifiably not a blunder',()=>{
-  const card=(index,label,type='Attack')=>({id:`C${index}`,command:{action:'play_card',card_index:index},label});
-  // Quiet turn: a bounded play verifies.
-  const quiet=state({player:{hp:60,block:0},battle:{enemies:[enemy({intents:[{type:'Buff',label:''}]})]}});
-  const bash=card(0,'痛击: 造成8点伤害。 给予2层易伤。');
-  assert.equal(verifyStableProposal(quiet,[bash,endTurn],bash).ok,true);
-  // Losing turn: a play that cannot cover the gap is refused.
-  const losing=state({player:{hp:10,block:0},battle:{enemies:[enemy({intents:[{type:'Attack',label:'20'}]})]}});
-  assert.equal(verifyStableProposal(losing,[bash,endTurn],bash).ok,false);
-  // Unbounded effect: refused even when the turn is quiet.
-  const risky=card(1,'羽化: 在你的抽牌堆中加入3张随机攻击牌。 消耗。',"Skill");
-  assert.equal(verifyStableProposal(quiet,[risky,endTurn],risky).ok,false);
+test('a last-enemy lethal still resolves locally when other cards are in hand',()=>{
+  const s=state({player:{hp:60,block:0},battle:{enemies:[enemy({hp:7,intents:[{type:'Attack',label:'12'}]})]}});
+  const options=[card(0,'耸肩无视: 获得8点格挡。 抽1张牌。'),card(1,'打击: 造成8点伤害。 -> Enemy (7 HP)'),endTurn];
+  const next=nextLocalPlay(s,options);
+  assert.equal(next.option.command.card_index,1);
 });
 
 test('a kill line needs one distinct card per enemy and enough energy',()=>{
@@ -193,13 +183,12 @@ test('a kill line needs one distinct card per enemy and enough energy',()=>{
   assert.equal(decided.evidence.energy,2);
 });
 
-test('needed damage is hp minus block, so a small hit is not a kill',()=>{
-  // 6 HP behind 4 block needs 2 damage to remove: a 6-damage hit is a kill, a
-  // 1-damage hit is not, and the program must tell them apart.
+test('needed damage covers block then hp, so 6 damage does not kill 6 HP + 4 block',()=>{
   const shielded=()=>state({player:{hp:60,block:0,energy:3,hand:[{index:0,cost:'1'}]},
     battle:{enemies:[enemy({hp:6,block:4})]}});
-  assert.equal(localPolicy(shielded(),[card(0,'打击: 造成6点伤害。'),endTurn]).kind,'kill');
+  assert.notEqual(localPolicy(shielded(),[card(0,'打击: 造成6点伤害。'),endTurn]).kind,'kill');
   assert.notEqual(localPolicy(shielded(),[card(0,'戳刺: 造成1点伤害。'),endTurn]).kind,'kill');
+  assert.equal(localPolicy(shielded(),[card(0,'打击: 造成10点伤害。'),endTurn]).kind,'kill');
 });
 
 test('a fight the hand cannot answer stops instead of grinding',()=>{

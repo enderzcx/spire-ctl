@@ -1,28 +1,46 @@
 // Conditional continuation after a takeover.
 //
-// A planner packet is expensive, and re-deciding the same already-assessed risk
-// card by card is what makes a run slow. The contract is therefore: a takeover
-// may return a strategy with explicit conditions, the local loop applies it
-// while those conditions hold, and anything that genuinely changes the picture
-// invalidates it.
-//
-// The program never treats a strategy as permission to skip legality. Every
-// preference is re-bound to an option advertised by the live state, and the
-// caller executes it through the normal path.
+// A strategy is an explicit, fail-closed contract: unknown kinds, missing run
+// identity and unmatched order do nothing. It never silently ends a turn while
+// a playable card remains, and it never carries from one run to another merely
+// because the floor number matches.
 import {readFile,writeFile,rm,mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
 
 export const strategyFile=dir=>join(dir,'strategy.json');
 const journalFile=dir=>join(dir,'handoffs.json');
+const CONDITION_KINDS=new Set(['hp_at_least','hp_at_most','same_floor','same_run','enemy_count_at_most','same_enemies','intents_unchanged']);
+
+export function runIdentity(state){
+  const run=state?.run;
+  if(!run||typeof run!=='object')return null;
+  const id=run.run_uuid??run.run_id??run.id??run.seed??run.character_seed;
+  const character=run.character??run.player_class??run.character_id??null;
+  if(id==null||String(id)==='')return null;
+  return JSON.stringify({id:String(id),character:character==null?null:String(character)});
+}
+
+export function bindStrategy(strategy,state){
+  const identity=runIdentity(state);
+  if(!identity)throw Error('Strategy requires a run identity from the live state');
+  return {
+    ...strategy,
+    run_identity:identity,
+    created_floor:Number(state.run?.floor),
+    created_act:state.run?.act??null
+  };
+}
 
 export function conditionHolds(condition,state){
   if(!condition||typeof condition!=='object')return false;
+  if(!CONDITION_KINDS.has(condition.kind))return false;
   const hp=Number(state.player?.hp??0);
   const enemies=(state.battle?.enemies??[]).filter(enemy=>enemy.hp>0);
   switch(condition.kind){
     case 'hp_at_least':return hp>=Number(condition.value);
     case 'hp_at_most':return hp<=Number(condition.value);
     case 'same_floor':return state.run?.act===condition.act&&state.run?.floor===condition.floor;
+    case 'same_run':return runIdentity(state)===String(condition.value??'');
     case 'enemy_count_at_most':return enemies.length<=Number(condition.value);
     case 'same_enemies':{
       const ids=enemies.map(enemy=>enemy.entity_id).sort().join(',');
@@ -36,23 +54,29 @@ export function conditionHolds(condition,state){
   }
 }
 
-// Every reason a strategy stops applying. An unknown condition kind never
-// counts as satisfied, so an unreadable strategy simply does nothing.
+function expiryFires(condition,state){
+  if(!condition||typeof condition!=='object')return true;
+  if(!CONDITION_KINDS.has(condition.kind))return true;
+  return conditionHolds(condition,state);
+}
+
 export function strategyApplies(strategy,state){
   if(!strategy||!Array.isArray(strategy.conditions)||!strategy.conditions.length)
     return {ok:false,reason:'strategy has no conditions'};
+  if(!strategy.run_identity)return {ok:false,reason:'strategy is missing run identity'};
+  const identity=runIdentity(state);
+  if(!identity||identity!==strategy.run_identity)
+    return {ok:false,reason:'strategy belongs to a different run'};
   if(strategy.expires_on?.length)
     for(const condition of strategy.expires_on)
-      if(conditionHolds(condition,state))
-        return {ok:false,reason:`invalidated by ${condition.kind}`};
+      if(expiryFires(condition,state))
+        return {ok:false,reason:`invalidated by ${condition.kind??'unreadable expiry'}`};
   for(const condition of strategy.conditions)
     if(!conditionHolds(condition,state))
       return {ok:false,reason:`condition no longer holds: ${condition.kind}`};
   return {ok:true};
 }
 
-// The first advertised option whose label matches a preference. Legality stays
-// with the caller's option list; this only orders what is already legal.
 export function strategyPreference(strategy,options){
   for(const preference of strategy?.order??[]){
     const pattern=String(preference.match??'');
@@ -60,25 +84,33 @@ export function strategyPreference(strategy,options){
     const option=options.find(candidate=>String(candidate.label??'').includes(pattern));
     if(option)return {option,preference};
   }
-  // Ending the turn is mechanical: nothing about the strategy can make it wrong,
-  // and refusing it would stall the loop on an empty hand. It is therefore the
-  // implicit last preference, and a strategy never has to spell it out.
+  const playable=options.filter(candidate=>candidate.command?.action==='play_card');
+  if(playable.length)return null;
   const endTurn=options.find(candidate=>candidate.command?.action==='end_turn');
-  if(endTurn)return {option:endTurn,preference:{match:'end turn',why:'nothing else is playable; close the turn'}};
+  if(endTurn)return {option:endTurn,preference:{match:'end turn',why:'no playable card remains; close the turn'}};
   return null;
 }
 
-// A strategy belongs to the run and floor it was agreed on. A new run starts at
-// floor 1 (or the run counter resets), so a strategy recorded deeper than the
-// current floor is from a previous run and is discarded instead of quietly
-// steering the new one.
+export function constrainOptions(strategy,options){
+  if(!strategy?.order?.length)return options;
+  const matched=[];
+  for(const preference of strategy.order){
+    const pattern=String(preference.match??'');
+    if(!pattern)continue;
+    for(const option of options)
+      if(String(option.label??'').includes(pattern)&&!matched.includes(option))matched.push(option);
+  }
+  return matched.length?matched:options;
+}
+
 export async function loadStrategy(dir,state=null){
   let strategy=null;
   try{strategy=JSON.parse(await readFile(strategyFile(dir),'utf8'));}
   catch(error){if(error.code==='ENOENT')return null;throw error;}
-  if(state&&Number.isFinite(strategy?.created_floor)&&Number.isFinite(state.run?.floor)
-    &&strategy.created_floor>state.run.floor){
-    await clearStrategy(dir);
+  if(!state)return strategy;
+  if(!strategy?.run_identity||runIdentity(state)!==strategy.run_identity){
+    if(Number.isFinite(strategy?.created_floor)&&Number.isFinite(state.run?.floor)
+      &&strategy.created_floor>state.run.floor)await clearStrategy(dir);
     return null;
   }
   return strategy;
@@ -93,10 +125,6 @@ export async function clearStrategy(dir){
   await rm(strategyFile(dir),{force:true});
 }
 
-// One handover per distinct state unless a planner strategy exists for it. This
-// is a loop breaker, not a confidence shortcut: it prevents asking the same
-// question again and again, and it never substitutes repeated sampling for a
-// decision.
 export async function noteHandoff(dir,stateId,reason){
   await mkdir(dir,{recursive:true});
   let journal={};
@@ -121,18 +149,14 @@ export async function clearHandoffs(dir){
   await rm(journalFile(dir),{force:true});
 }
 
-// A risk guard must not become a per-card interruption. The same guard state -
-// the same health band and the same living enemies - is therefore reported only
-// once, and any real change (health dropping further, a new enemy) reports
-// again. The guard itself is never removed; it simply stops repeating itself.
 const guardFile=dir=>join(dir,'guard-state.json');
-
 const bandOf=hp=>Math.floor(Number(hp)/5);
 
 export function guardSignature(state){
   const enemies=(state.battle?.enemies??[]).filter(enemy=>enemy.hp>0)
     .map(enemy=>enemy.entity_id).sort().join(',');
-  return `${bandOf(state.player?.hp??0)}|${state.run?.act??'?'}:${state.run?.floor??'?'}|${enemies}`;
+  const identity=runIdentity(state)??`${state.run?.act??'?'}:${state.run?.floor??'?'}`;
+  return `${bandOf(state.player?.hp??0)}|${identity}|${enemies}`;
 }
 
 export async function noteGuard(dir,guard,signature){

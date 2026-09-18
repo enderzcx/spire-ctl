@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {planCandidates,chooseCandidate,candidateQuestions} from '../src/planning.mjs';
+import {planCandidates,chooseCandidate} from '../src/planning.mjs';
 
 const card=(index,label,cost='1',type='Attack')=>({id:`CARD_${index}`,index,name:label.split(':')[0],type,cost,
   target_type:type==='Attack'?'AnyEnemy':'Self',can_play:true,unplayable_reason:null,description:label,
@@ -54,22 +54,16 @@ test('an unbounded effect stays a one-step candidate and never joins a prefix',(
       assert.equal(candidate.steps.some(step=>step.card.id==='CARD_0'),false,'random card not in a prefix');
 });
 
-test('survival is enforced without the program overruling a safe model pick',()=>{
+test('survival is enforced without the program silently picking another card',()=>{
   const candidates=[
     {id:'c0',title:'greedy',energy:3,damage:20,block:0,kills:0,survives:false,steps:[{card:{name:'X'}}]},
     {id:'c1',title:'block',energy:1,damage:4,block:9,kills:0,survives:true,steps:[{card:{name:'Defend'}}]},
     {id:'c2',title:'kill',energy:2,damage:8,block:0,kills:1,survives:true,steps:[{card:{name:'Strike'}}]}
   ];
-  // Lethal turn: the line that dies is removed, so even the model's pick of it
-  // resolves to a surviving line instead.
   const enforced=chooseCandidate(candidates,{choice:'c0'});
-  assert.equal(enforced.candidate.survives,true);
-  assert.notEqual(enforced.candidate.id,'c0');
-  // Quiet turn: every line lives, so a safe model pick is honoured even when
-  // another candidate would kill.
+  assert.equal(enforced.candidate,null);
   const quiet=candidates.map(c=>({...c,survives:true}));
   assert.equal(chooseCandidate(quiet,{choice:'c1'}).candidate.id,'c1');
-  // Nothing survives: the program says so instead of inventing a line.
   const doomed=candidates.map(c=>({...c,survives:false}));
   assert.equal(chooseCandidate(doomed,{choice:'c0'}).candidate,null);
 });
@@ -84,20 +78,8 @@ test('a strategy preference outranks the model ranking',()=>{
   assert.match(chosen.why,/strategy preference/);
 });
 
-test('speculative per-candidate questions are independent',()=>{
-  const questions=candidateQuestions([{id:'c0',title:'x'},{id:'c1',title:'y'}]);
-  assert.deepEqual(Object.keys(questions),['safe_c0','safe_c1']);
-  for(const question of Object.values(questions)){
-    assert.equal(question.type,'noul');
-    assert.ok(question.instructions.length>20);
-  }
-});
-
-test('the adapter asks one batch for the choice plus independent judgments',async()=>{
+test('the adapter asks one candidate choice and no decorative survival questions',async()=>{
   const {choose}=await import('../src/jev.mjs');
-  // A lethal displayed attack, so the per-candidate safety questions are asked.
-  // 6 block from the hand cannot cover a 9-damage attack on 5 HP, so the defense
-  // line is the only surviving candidate and the safety questions are asked.
   const s=state({player:{hp:5,block:2,energy:3,hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','1','Skill')]},
     enemies:[{entity_id:'E_0',combat_id:1,name:'E',hp:20,max_hp:20,block:0,intents:[{type:'Attack',label:'9'}]}]});
   const options=[option(0,0,'打击: 造成6点伤害。 -> E (20 HP)',{target:'E_0'}),option(1,1,'防御: 获得5点格挡。')];
@@ -106,22 +88,17 @@ test('the adapter asks one batch for the choice plus independent judgments',asyn
   let body=null,requests=0;
   const fetcher=async(_url,init)=>{
     requests++;body=JSON.parse(init.body);
-    const answers={plan:{type:'choice',choice:candidates[1].id,probabilities:{},confidence:.8}};
-    for(const candidate of candidates)answers[`safe_${candidate.id}`]={type:'noul',noul:.9};
-    return {ok:true,json:async()=>({answers,usage:{input_tokens:120,output_tokens:12}})};
+    return {ok:true,json:async()=>({answers:{plan:{type:'choice',choice:candidates[1].id,confidence:.8}},
+      usage:{input_tokens:120,output_tokens:12}})};
   };
   const result=await choose(s,options,{apiKey:'test-key',fetcher,candidates});
   assert.equal(requests,1,'a candidate decision is one request');
-  const questionIds=Object.keys(body.questions);
-  assert.equal(questionIds.length,1+candidates.length);
-  assert.equal(body.questions.plan.type,'choice');
-  for(const candidate of candidates)assert.equal(body.questions[`safe_${candidate.id}`].type,'noul');
-  assert.equal(body.state.options.length,options.length);
+  assert.deepEqual(Object.keys(body.questions),['plan']);
   assert.equal(result.planned,true);
   assert.equal(result.candidate.id,candidates[1].id);
-  // The chosen step must be one of the advertised options, not a synthesised one.
   assert.ok(options.some(o=>o.id===result.option.id));
   assert.equal(result.usage.input_tokens,120);
+  assert.equal(result.requests,1);
 });
 
 test('an unused candidate path never asks a model',async()=>{
@@ -135,146 +112,49 @@ test('an unused candidate path never asks a model',async()=>{
   assert.equal(requests,1,'a single candidate falls back to the plain choice path');
 });
 
-test('an unsure candidate answer is reported instead of acted on',async()=>{
+test('low-confidence candidate answers are handed over by the decision entry',async()=>{
   const {choose}=await import('../src/jev.mjs');
-  const s=state({player:{energy:3,hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','1','Skill')]}});
-  const options=[option(0,0,'打击: 造成6点伤害。 -> E (20 HP)',{target:'E_0'}),option(1,1,'防御: 获得5点格挡。')];
+  const {decideCombat}=await import('../src/decision.mjs');
+  const {actions,route}=await import('../src/game.mjs');
+  const s={state_type:'monster',run:{act:1,floor:9,seed:'r'},player:{hp:70,max_hp:80,block:0,energy:3,
+    hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','1','Skill')],potions:[]},
+    battle:{ready_for_action:true,enemies:[{entity_id:'E_0',combat_id:1,name:'E',hp:20,max_hp:20,block:0,
+      intents:[{type:'Attack',label:'8'}]}]}};
+  const options=actions(s);
   const candidates=planCandidates(s,options);
-  // Neither line is rated survivable and they are not decisively different, so
-  // the program reports instead of acting.
-  const fetcher=async(_url,init)=>{
-    const body=JSON.parse(init.body);
-    if(body.questions.style)return {ok:true,json:async()=>({answers:{style:{type:'choice',choice:'unclear',confidence:.8}}})};
-    return {ok:true,json:async()=>({answers:{
-      plan:{type:'choice',choice:candidates[0].id,confidence:.01},
-      [`safe_${candidates[0].id}`]:{type:'noul',noul:.3},
-      [`safe_${candidates[1].id}`]:{type:'noul',noul:.4}
-    },usage:{input_tokens:90,output_tokens:9}})};
-  };
-  const result=await choose(s,options,{apiKey:'test-key',fetcher,candidates});
-  assert.equal(result.low_confidence_candidate,true);
-  assert.equal(result.option,null,'an unsure line is not dispatched');
-  assert.equal(result.answer.confidence,.01);
-  assert.equal(result.plan_batch_requests??result.requests,1);
-  // The independent judgments travel with the packet so a caller can escalate
-  // with evidence rather than a bare number.
-  assert.equal(result.answer.nouls[`safe_${candidates[1].id}`],.4);
+  const fetcher=async()=>({ok:true,json:async()=>({answers:{plan:{choice:candidates[0].id,confidence:.01}},
+    usage:{input_tokens:90,output_tokens:9}})});
+  const ask=(state,menu,shortlist,extra)=>choose(state,menu,{apiKey:'k',fetcher,shortlist,...extra});
+  const decision=await decideCombat({state:s,options,route:route(s,options),ask});
+  assert.equal(decision.kind,'handoff');
+  assert.equal(decision.reason,'low_confidence_candidate');
+  assert.equal(decision.requests,1);
 });
 
 test('the candidate cutoff is configurable for measurement',async()=>{
   const {choose}=await import('../src/jev.mjs');
-  const s=state({player:{energy:3,hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','1','Skill')]}});
-  const options=[option(0,0,'打击: 造成6点伤害。 -> E (20 HP)',{target:'E_0'}),option(1,1,'防御: 获得5点格挡。')];
+  const {decideCombat}=await import('../src/decision.mjs');
+  const {actions,route}=await import('../src/game.mjs');
+  const s={state_type:'monster',run:{act:1,floor:9,seed:'r'},player:{hp:70,max_hp:80,block:0,energy:3,
+    hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','1','Skill')],potions:[]},
+    battle:{ready_for_action:true,enemies:[{entity_id:'E_0',combat_id:1,name:'E',hp:20,max_hp:20,block:0,
+      intents:[{type:'Attack',label:'8'}]}]}};
+  const options=actions(s);
   const candidates=planCandidates(s,options);
-  const fetcher=async()=>({ok:true,json:async()=>({answers:{
-    plan:{type:'choice',choice:candidates[1].id,confidence:.2},
-    [`safe_${candidates[0].id}`]:{type:'noul',noul:.2},
-    [`safe_${candidates[1].id}`]:{type:'noul',noul:.8}
-  }})}) ;
+  const fetcher=async()=>({ok:true,json:async()=>({answers:{plan:{choice:candidates[0].id,confidence:.2}}})});
   process.env.SPIRE_PLAN_MIN_CONFIDENCE='0.1';
   try{
-    const result=await choose(s,options,{apiKey:'test-key',fetcher,candidates});
-    assert.equal(result.low_confidence_candidate,undefined);
-    assert.equal(result.planned,true);
-    assert.ok(result.option,'a lowered gate acts');
+    const decision=await decideCombat({state:s,options,route:route(s,options),
+      ask:(st,menu,shortlist,extra)=>choose(st,menu,{apiKey:'k',fetcher,shortlist,...extra})});
+    assert.equal(decision.kind==='execute'||decision.kind==='execute_prefix',true);
   }finally{delete process.env.SPIRE_PLAN_MIN_CONFIDENCE;}
 });
 
-test('the candidate threshold scales with the stakes',async()=>{
-  const {choose}=await import('../src/jev.mjs');
-  const options=[option(0,0,'打击: 造成6点伤害。 -> E (20 HP)',{target:'E_0'}),option(1,1,'防御: 获得5点格挡。')];
-  const quiet=state({player:{hp:70,energy:3,hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','1','Skill')]}});
-  const quietCandidates=planCandidates(quiet,options);
-  assert.ok(quietCandidates.every(candidate=>candidate.survives===true),'quiet board: every line survives');
-  const answer=confidence=>({ok:true,json:async()=>({answers:{
-    plan:{type:'choice',choice:quietCandidates[1].id,confidence},
-    ...Object.fromEntries(quietCandidates.map(c=>[`safe_${c.id}`,{type:'noul',noul:.8}]))
-  }})});
-  // A low-stakes turn acts on a weaker judgment...
-  const low=await choose(quiet,options,{apiKey:'k',fetcher:async()=>answer(.3),candidates:quietCandidates});
-  assert.ok(low.option,'a safe, low-stakes line is acted on');
-  assert.equal(low.low_confidence_candidate,undefined);
-  // ...while a lethal turn demands the full cutoff.
-  const lethal=state({player:{hp:5,block:2,energy:3,hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','1','Skill')]},
-    enemies:[{entity_id:'E_0',combat_id:1,name:'E',hp:20,max_hp:20,block:0,intents:[{type:'Attack',label:'9'}]}]});
-  const lethalCandidates=planCandidates(lethal,options.map(o=>o.command.card_index===0
-    ?option(0,0,'打击: 造成6点伤害。 -> E (20 HP)',{target:'E_0'})
-    :option(1,1,'防御: 获得5点格挡。')));
-  const strict=await choose(lethal,options,{apiKey:'k',fetcher:async()=>({ok:true,json:async()=>({answers:{
-    plan:{type:'choice',choice:lethalCandidates.find(c=>c.block>0)?.id??lethalCandidates[0].id,confidence:.3},
-    ...Object.fromEntries(lethalCandidates.map(c=>[`safe_${c.id}`,{type:'noul',noul:.6}]))
-  }})}),candidates:lethalCandidates});
-  assert.equal(strict.low_confidence_candidate,true,'a lethal turn keeps the full cutoff');
-  assert.equal(strict.option,null);
-});
-
-test('a literal either/or answer resolves an unsure candidate ranking',async()=>{
-  const {choose}=await import('../src/jev.mjs');
-  const options=[option(0,0,'打击: 造成6点伤害。 -> E (20 HP)',{target:'E_0'}),option(1,1,'防御: 获得5点格挡。')];
-  const quiet=state({player:{hp:70,energy:3,hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','1','Skill')]}});
-  const candidates=planCandidates(quiet,options);
-  let calls=0;
-  const fetcher=async(_url,init)=>{
-    const body=JSON.parse(init.body);
-    calls++;
-    if(body.questions.style)return {ok:true,json:async()=>({answers:{style:{type:'choice',choice:'defense',confidence:.62}}})};
-    return {ok:true,json:async()=>({answers:{plan:{type:'choice',choice:candidates[0].id,confidence:.05}}})};
-  };
-  const result=await choose(quiet,options,{apiKey:'k',fetcher,candidates});
-  assert.equal(calls,2,'one ranking ask, then the literal style question');
-  assert.equal(result.answer.style_resolved,true);
-  assert.equal(result.answer.confidence,.62);
-  assert.equal(result.option.command.card_index,1,'the defense line was chosen');
-  assert.match(result.candidate.why,/style question/);
-});
-
-test('an unclear style answer still hands over instead of guessing',async()=>{
-  const {choose}=await import('../src/jev.mjs');
-  const options=[option(0,0,'打击: 造成6点伤害。 -> E (20 HP)',{target:'E_0'}),option(1,1,'防御: 获得5点格挡。')];
-  const quiet=state({player:{hp:70,energy:3,hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','1','Skill')]}});
-  const candidates=planCandidates(quiet,options);
-  const fetcher=async(_url,init)=>{
-    const body=JSON.parse(init.body);
-    if(body.questions.style)return {ok:true,json:async()=>({answers:{style:{type:'choice',choice:'unclear',confidence:.9}}})};
-    return {ok:true,json:async()=>({answers:{plan:{type:'choice',choice:candidates[0].id,confidence:.03}}})};
-  };
-  const result=await choose(quiet,options,{apiKey:'k',fetcher,candidates});
-  assert.equal(result.option,null,'unclear is not a decision');
-  assert.equal(result.low_confidence_candidate,true);
-});
-
-test('a candidate the model itself rated safer wins over its unsure pick',async()=>{
-  const {choose}=await import('../src/jev.mjs');
-  const s=state({player:{hp:5,block:2,energy:3,hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','1','Skill')]},
-    enemies:[{entity_id:'E_0',combat_id:1,name:'E',hp:20,max_hp:20,block:0,intents:[{type:'Attack',label:'9'}]}]});
-  const options=[option(0,0,'打击: 造成6点伤害。 -> E (20 HP)',{target:'E_0'}),option(1,1,'防御: 获得5点格挡。')];
-  const candidates=planCandidates(s,options);
-  const attack=candidates.find(c=>c.damage>0), defend=candidates.find(c=>c.block>0);
-  assert.ok(attack&&defend,'both lines offered');
-  const fetcher=async(_url,init)=>{
-    const body=JSON.parse(init.body);
-    if(body.questions.style)return {ok:true,json:async()=>({answers:{style:{type:'choice',choice:'unclear',confidence:.9}}})};
-    return {ok:true,json:async()=>({answers:{
-      plan:{type:'choice',choice:attack.id,confidence:.2},
-      [`safe_${attack.id}`]:{type:'noul',noul:.2},
-      [`safe_${defend.id}`]:{type:'noul',noul:.8}
-    }})};
-  };
-  const result=await choose(s,options,{apiKey:'k',fetcher,candidates});
-  assert.ok(result.option,'a line is chosen');
-  assert.equal(result.option.command.card_index,1,'the line the model itself rated safer is played');
-  assert.equal(result.answer.safety_resolved,true);
-  assert.match(result.candidate.why,/safer according to the model/);
-});
-
 test('a line that kills the attacker survives without blocking',()=>{
-  // 6 HP, a 9-damage attack, and a card that removes the attacker: the line
-  // survives because nothing is left to hit back. Counting only block used to
-  // mark this as a losing line and ask a question the code had already answered.
   const s=state({player:{hp:6,block:0,energy:3,hand:[card(0,'打击: 造成9点伤害。')]},
     enemies:[{entity_id:'E_0',combat_id:1,name:'E',hp:9,max_hp:9,block:0,intents:[{type:'Attack',label:'9'}]}]});
   const [candidate]=planCandidates(s,[option(0,0,'打击: 造成9点伤害。 -> E (9 HP)',{target:'E_0'})]);
   assert.equal(candidate.kills,1);
   assert.equal(candidate.survives,true);
-  assert.equal(candidate.unblocked,9,'the attack is fully unblocked');
+  assert.equal(candidate.unblocked,0);
 });

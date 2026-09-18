@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {incomingDamage as combatIncoming} from './combat.mjs';
 
 export const inCombat=s=>['monster','elite','boss'].includes(s.state_type);
 export const stateId=s=>createHash('sha256').update(JSON.stringify(s)).digest('hex').slice(0,24);
@@ -105,16 +106,7 @@ export function actions(s,{deduplicate=true}={}) {
   return out;
 }
 
-export function incomingDamage(s) {
-  let total=0;
-  for(const e of s.battle?.enemies??[])for(const i of e.intents??[]) {
-    if(!i.type?.includes('Attack'))continue;
-    const m=String(i.label??'').match(/^(\d+)(?:\s*[x×]\s*(\d+))?$/);
-    if(!m)return null;
-    total+=Number(m[1])*Number(m[2]??1);
-  }
-  return total;
-}
+export function incomingDamage(s){return combatIncoming(s);}
 
 // A route can be a safety guard (a threshold the program applies to itself) or
 // a genuinely new decision. `strategic` marks the difference so an already

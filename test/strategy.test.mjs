@@ -6,12 +6,13 @@ import {join} from 'node:path';
 import {strategyApplies,strategyPreference,loadStrategy,saveStrategy,clearStrategy,
   noteHandoff,seenHandoff,clearHandoffs,guardSignature,noteGuard,clearGuards} from '../src/strategy.mjs';
 
-const combat=(overrides={})=>({state_type:'monster',run:{act:1,floor:9,...overrides.run},
+const combat=(overrides={})=>({state_type:'monster',run:{act:1,floor:9,seed:'run-s',...overrides.run},
   player:{hp:40,max_hp:80,block:0,energy:3,...overrides.player},
   battle:{enemies:overrides.enemies??[{entity_id:'E_0',hp:20,intents:[{label:'8'}]}]}});
 const temp=async fn=>{const dir=await mkdtemp(join(tmpdir(),'spire-strategy-'));try{await fn(dir);}finally{await rm(dir,{recursive:true,force:true});}};
 
 const strategy=(overrides={})=>({strategy_id:'s1',created_state_id:'x',reason:'survive the boss opener',
+  run_identity:JSON.stringify({id:'run-s',character:null}),
   conditions:[{kind:'hp_at_least',value:20},{kind:'same_floor',act:1,floor:9}],
   expires_on:[{kind:'enemy_count_at_most',value:0}],
   order:[{match:'痛击',why:'apply vulnerable'},{match:'防御',why:'block'}],...overrides});
@@ -33,6 +34,7 @@ test('unknown condition kinds never count as satisfied',()=>{
   assert.equal(strategyApplies(unreadable,combat()).ok,false);
   assert.equal(strategyApplies({strategy_id:'s'},combat()).ok,false);
   assert.equal(strategyApplies(strategy({conditions:[]}),combat()).ok,false);
+  assert.equal(strategyApplies(strategy({run_identity:undefined}),combat()).ok,false);
 });
 
 test('a preference binds to an advertised option, not to a stored index',()=>{
@@ -75,7 +77,7 @@ test('the battle loop records a handover and blocks the second ask on that state
   const card=(i,label,type='Attack')=>({id:`C${i}`,index:i,name:label.slice(0,2),type,cost:'1',
     target_type:type==='Attack'?'AnyEnemy':'Self',can_play:true,unplayable_reason:null,description:label,
     keywords:[],is_upgraded:false,rarity:'Common',star_cost:null});
-  const combat2={state_type:'monster',run:{act:1,floor:9},player:{hp:60,max_hp:80,block:0,energy:3,
+  const combat2={state_type:'monster',run:{act:1,floor:9,seed:'run-s'},player:{hp:60,max_hp:80,block:0,energy:3,
     hand:[card(0,'飞剑回旋镖: 随机对敌人造成3点伤害3次。'),card(1,'防御: 获得5点格挡。','Skill')],potions:[]},
     battle:{ready_for_action:true,round:1,turn:'player',action_running:false,action_queue_empty:true,
       enemies:[{entity_id:'E_0',combat_id:1,name:'E',hp:40,max_hp:40,block:0,status:[],
@@ -89,7 +91,7 @@ test('the battle loop records a handover and blocks the second ask on that state
     assert.equal(first.reason,'low_confidence');
     const second=await battle(game,decide,{dir});
     assert.equal(second.reason,'repeated_state','the same state is not asked twice');
-    assert.equal(calls,2,'one ask per battle call, never a resample loop');
+    assert.equal(calls,1,'the second invocation does not ask again');
     assert.equal(sends,0);
     const rows=(await readFile(join(dir,'events.jsonl'),'utf8')).trim().split('\n').map(l=>JSON.parse(l));
     const takeovers=rows.filter(row=>row.event==='takeover');
@@ -108,7 +110,7 @@ test('an agreed strategy carries the loop through a safety guard, not past a new
   const card=(i,label,type='Attack')=>({id:`C${i}`,index:i,name:label.slice(0,2),type,cost:'1',
     target_type:type==='Attack'?'AnyEnemy':'Self',can_play:true,unplayable_reason:null,description:label,
     keywords:[],is_upgraded:false,rarity:'Common',star_cost:null});
-  const lowHp={state_type:'monster',run:{act:1,floor:11},player:{hp:12,max_hp:80,block:0,energy:3,
+  const lowHp={state_type:'monster',run:{act:1,floor:11,seed:'run-s'},player:{hp:12,max_hp:80,block:0,energy:3,
     hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','Skill')],potions:[]},
     battle:{ready_for_action:true,round:2,turn:'player',action_running:false,action_queue_empty:true,
       enemies:[{entity_id:'E_0',combat_id:1,name:'E',hp:30,max_hp:30,block:0,status:[],
@@ -123,6 +125,7 @@ test('an agreed strategy carries the loop through a safety guard, not past a new
 
     // With an agreed strategy whose conditions hold, the loop continues locally.
     await saveStrategy(dir,{strategy_id:'low-hp-1',created_state_id:'x',reason:'keep chipping',
+      run_identity:JSON.stringify({id:'run-s',character:null}),
       conditions:[{kind:'same_floor',act:1,floor:11},{kind:'hp_at_least',value:5}],
       expires_on:[{kind:'enemy_count_at_most',value:0}],
       order:[{match:'打击',why:'chip'}]});
@@ -150,19 +153,19 @@ test('a strategy may close a turn it cannot otherwise act on',()=>{
   const options=[{id:'0',command:{action:'end_turn'},label:'End turn'}];
   const picked=strategyPreference(strategy(),options);
   assert.equal(picked.option.command.action,'end_turn');
-  assert.match(picked.preference.why,/nothing else is playable/);
-  // A playable preference still outranks the implicit end turn.
+  assert.match(picked.preference.why,/no playable card remains/);
   const both=[{id:'1',command:{action:'play_card',card_index:0},label:'痛击: 造成8点伤害。'},
     {id:'0',command:{action:'end_turn'},label:'End turn'}];
   assert.equal(strategyPreference(strategy(),both).option.id,'1');
+  const unmatched=[{id:'1',command:{action:'play_card',card_index:0},label:'打击: 造成6点伤害。'},
+    {id:'0',command:{action:'end_turn'},label:'End turn'}];
+  assert.equal(strategyPreference(strategy(),unmatched),null,'unmatched order does not implicit end turn');
 });
 
 test('a strategy from a previous run is discarded instead of steering a new one',()=>temp(async dir=>{
   await saveStrategy(dir,{...strategy(),created_floor:11,conditions:[{kind:'same_floor',act:1,floor:11}]});
-  // Still on floor 11: it applies.
-  assert.equal((await loadStrategy(dir,{run:{act:1,floor:11}})).strategy_id,'s1');
-  // A new run starts at floor 1, so the old strategy is dropped and removed.
-  assert.equal(await loadStrategy(dir,{run:{act:1,floor:1}}),null);
+  assert.equal((await loadStrategy(dir,{run:{act:1,floor:11,seed:'run-s'}})).strategy_id,'s1');
+  assert.equal(await loadStrategy(dir,{run:{act:1,floor:1,seed:'new-run'}}),null);
   assert.equal(await loadStrategy(dir),null,'the file was cleared, not just ignored');
 }));
 
