@@ -1,0 +1,60 @@
+diff --git a/McpMod.StateBuilder.cs b/McpMod.StateBuilder.cs
+index 76eee84..b2c38d8 100644
+--- a/McpMod.StateBuilder.cs
++++ b/McpMod.StateBuilder.cs
+@@ -1073,6 +1073,17 @@ public static partial class McpMod
+         battle["round"] = combatState.RoundNumber;
+         battle["turn"] = combatState.CurrentSide.ToString().ToLower();
+         battle["is_play_phase"] = IsPlayPhase(combatState);
++        var runManager = RunManager.Instance;
++        bool executorIdle = runManager.ActionExecutor?.CurrentlyRunningAction == null;
++        bool queueEmpty = runManager.ActionQueueSet?.IsEmpty ?? false;
++        battle["action_running"] = !executorIdle;
++        battle["action_queue_empty"] = queueEmpty;
++        var handUi = NCombatRoom.Instance?.Ui?.Hand;
++        battle["ready_for_action"] = IsPlayPhase(combatState)
++            && executorIdle && queueEmpty
++            && !CombatManager.Instance.PlayerActionsDisabled
++            && handUi != null && !handUi.InCardPlay
++            && handUi.CurrentMode == NPlayerHand.Mode.Play;
+ 
+         // Enemies
+         var enemies = new List<Dictionary<string, object?>>();
+diff --git a/McpMod.cs b/McpMod.cs
+index 3b5ed64..f4a4c7d 100644
+--- a/McpMod.cs
++++ b/McpMod.cs
+@@ -83,7 +83,10 @@ public static partial class McpMod
+         try
+         {
+             // Optional settings UI patches should not block the HTTP bridge itself.
+-            TryApplyHarmonyPatches();
++            // The optional speed-settings detours stall startup on this macOS
++            // host. The REST bridge does not depend on them.
++            if (!OperatingSystem.IsMacOS()) TryApplyHarmonyPatches();
++            GD.Print("[STS2 MCP] Initializing REST bridge (macOS: no settings detours)");
+ 
+             // Connect to main thread process frame for action execution
+             var tree = (SceneTree)Engine.GetMainLoop();
+@@ -178,9 +181,18 @@ public static partial class McpMod
+         {
+             var request = context.Request;
+             var response = context.Response;
+-            response.Headers.Add("Access-Control-Allow-Origin", "*");
+-            response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+-            response.Headers.Add("Access-Control-Allow-Headers", "Content-Type");
++            // This bridge is for the local controller, never browser pages.
++            if (!string.IsNullOrEmpty(request.Headers["Origin"]))
++            {
++                SendError(response, 403, "Browser origins are not permitted");
++                return;
++            }
++            if (request.HttpMethod == "POST"
++                && !(request.ContentType?.StartsWith("application/json", StringComparison.OrdinalIgnoreCase) ?? false))
++            {
++                SendError(response, 415, "application/json required");
++                return;
++            }
+ 
+             if (request.HttpMethod == "OPTIONS")
+             {

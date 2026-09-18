@@ -1,0 +1,11 @@
+{
+  "name": "spire-jev",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A model-independent Slay the Spire 2 controller with Jev fast decisions and explicit planner handoffs",
+  "type": "module",
+  "license": "MIT",
+  "engines": {"node": ">=22"},
+  "bin": {"spire-jev": "bin/spire.mjs"},
+  "scripts": {"test": "node --test test/*.test.mjs", "check": "node --check bin/spire.mjs && node --check src/game.mjs && node --check src/runner.mjs && node --check src/jev.mjs && node --check src/plan.mjs && node --check scripts/dsh.mjs"}
+}

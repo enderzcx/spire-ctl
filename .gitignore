@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+.runtime/
+node_modules/
+vendor/
+out/
+*.dll
+*.pdb
+*.save
+*.run
+.reasonix/
+reasonix.toml
+.DS_Store
