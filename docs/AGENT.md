@@ -19,6 +19,50 @@ This CLI is a local single-player game controller. It works with any harness tha
 
 Confidence is a distribution statistic, not a calibrated probability of tactical correctness. The initial cutoff 0.5 and HP/potion thresholds are trial policy, not universal guarantees. Inspect transcripts before changing them. A high-confidence answer can still be bad strategy.
 
+## Takeover packets and strategy
+
+A `battle` run returns for the planner in three distinguishable cases:
+
+- `low_confidence` - the fast model could not settle the state and the program has
+  no verified move of its own. This is the first time this exact state is handed
+  over.
+- `repeated_state` - the same state was already handed over before. Do not answer
+  it with another sample; the packet needs a decision or a strategy.
+- `Potential lethal incoming damage` / `Lethal N damage cannot be blocked` - the
+  program's arithmetic says this turn loses. This is a real planner decision.
+
+A takeover may write `.runtime/strategy.json` so the loop can continue without a
+round trip per card. The contract is explicit and checked on every step:
+
+```json
+{
+  "strategy_id": "boss-opener-1",
+  "reason": "survive the boss opener, then re-evaluate",
+  "conditions": [
+    {"kind": "hp_at_least", "value": 25},
+    {"kind": "same_floor", "act": 2, "floor": 33},
+    {"kind": "same_enemies", "entity_ids": ["THE_INSATIABLE_0"]}
+  ],
+  "expires_on": [
+    {"kind": "enemy_count_at_most", "value": 0},
+    {"kind": "intents_unchanged", "signature": "THE_INSATIABLE_0:强化"}
+  ],
+  "order": [
+    {"match": "痛击", "why": "apply vulnerable before damage"},
+    {"match": "防御", "why": "cover the displayed attack"}
+  ]
+}
+```
+
+Supported condition kinds: `hp_at_least`, `hp_at_most`, `same_floor`,
+`enemy_count_at_most`, `same_enemies`, `intents_unchanged`. Anything else is
+treated as unsatisfied, so an unreadable strategy simply does nothing. The
+`order` entries match advertised option labels; the program re-binds them to the
+options the live state actually offers, still validates legality through the
+normal execution path, and stops the moment a condition fails or an expiry
+condition fires. New enemies, changed intents, a new floor or a broken HP floor
+therefore return control automatically instead of being papered over.
+
 ## Operational limits
 
 - One executing agent at a time. CLI mutations use a per-user, per-loopback-port shared lock; humans and other apps must not manipulate the board concurrently.

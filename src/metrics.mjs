@@ -63,7 +63,8 @@ function newTurn(key){
   return {turn:key,start_ms:null,end_ms:null,as_of_ms:null,
     complete:false,actions:0,cards_by_source:{jev:0,planner:0,planned:0},
     actions_by_source:{jev:0,planner:0,deterministic:0,planned:0},other_actions:0,
-    model_calls:0,inference_ms:0,inferences_ms:[],input_tokens:0,output_tokens:0,
+    model_calls:0,model_requests:0,strategy_steps:0,takeovers:0,repeated_takeovers:0,
+    inference_ms:0,inferences_ms:[],input_tokens:0,output_tokens:0,
     action_ms:0,agent_gap_ms:0,tail_gap_ms:0,plan_steps:0,
     interruptions:[]};
 }
@@ -75,6 +76,24 @@ function reasonOf(row){
 
 // Rows from several runs can share one log. Split only on an explicit protocol
 // boundary so a resumed run is never silently merged with the previous one.
+// The review requires same-version windows: events are stamped with the
+// decision protocol they were produced under, so reports never average two
+// different systems together.
+export function protocols(rows){
+  const seen=new Map();
+  for(const row of rows){
+    if(!isObject(row))continue;
+    const key=row.protocol??'unversioned';
+    seen.set(key,(seen.get(key)??0)+1);
+  }
+  return [...seen.entries()].map(([protocol,count])=>({protocol,count})).sort((a,b)=>b.count-a.count);
+}
+
+export function filterProtocol(rows,protocol){
+  if(protocol===undefined||protocol===null)return rows;
+  return rows.filter(row=>isObject(row)&&(row.protocol??'unversioned')===protocol);
+}
+
 export function splitRuns(rows){
   const boundaries=[];
   let cursor=-1;
@@ -135,6 +154,7 @@ export function analyzeTurns(rows){
   const byId=new Map();
   const turns=[];
   const stops=new Map();
+  const takeovers=new Map();
   let modelCalls=0,inferenceMs=0,inputTokens=0,outputTokens=0;
 
   const turnFor=(key)=>{
@@ -201,6 +221,30 @@ export function analyzeTurns(rows){
     if(at!==null)owner.as_of_ms=Math.max(owner.as_of_ms??at,at);
   }
 
+  // Requests actually sent to the fast model (including narrowed retries and the
+  // stability probe), takeovers handed back to the planner with their reasons,
+  // and steps executed under an agreed strategy. These are the counters the
+  // review requires so a speed claim is not just a share of local cards.
+  for(const row of rows){
+    if(!isObject(row))continue;
+    const kind=row.event;
+    if(kind!=='ask'&&kind!=='takeover'&&!(kind==='local_decision'&&row.kind==='strategy'))continue;
+    const at=atMs(row);
+    const owner=[...byId.values()].find(turn=>turn.start_ms!==null&&turn.end_ms!==null&&at!==null&&at>=turn.start_ms&&at<=turn.end_ms)
+      ??turns.at(-1);
+    if(!owner)continue;
+    if(kind==='ask'){owner.model_requests+=Number(row.requests??1);continue;}
+    if(kind==='takeover'){
+      owner.takeovers++;
+      if(row.reason==='repeated_state')owner.repeated_takeovers++;
+      const reason=String(row.reason??'takeover');
+      const entry=takeovers.get(reason)??{reason,count:0};
+      entry.count++;takeovers.set(reason,entry);
+      continue;
+    }
+    owner.strategy_steps++;
+  }
+
   for(const turn of turns){
     if(turn.start_ms!==null&&turn.end_ms!==null&&turn.end_ms>turn.start_ms)
       turn.turn_ms=Math.max(0,turn.end_ms-turn.start_ms);
@@ -209,7 +253,7 @@ export function analyzeTurns(rows){
     turn.stop=!!turn.interruptions.length;
   }
 
-  return {turns,actions:list,stops,
+  return {turns,actions:list,stops,takeovers:[...takeovers.values()].sort((a,b)=>b.count-a.count),
     calls:{jev:modelCalls},
     usage:{inference_ms:Math.round(inferenceMs),input_tokens:inputTokens,output_tokens:outputTokens}};
 }
@@ -217,11 +261,17 @@ export function analyzeTurns(rows){
 export function turnMetrics(rows,batch=3){
   const runs=splitRuns(rows);
   const summaries=runs.map((runRows,position)=>{
-    const {turns,stops,calls,usage}=analyzeTurns(runRows);
+    const {turns,stops,takeovers,calls,usage}=analyzeTurns(runRows);
     const last=turns.at(-1);
-    return {batch:position+1,turns,
+    const protocol=runRows.find(row=>isObject(row)&&row.protocol!==undefined)?.protocol??'unversioned';
+    return {batch:position+1,protocol,turns,
       summary:{turns_total:turns.length,turns_complete:turns.filter(t=>t.complete).length,
         jev_calls_within_turns:turns.reduce((total,t)=>total+t.model_calls,0),
+        jev_requests:turns.reduce((total,t)=>total+t.model_requests,0),
+        strategy_steps:turns.reduce((total,t)=>total+t.strategy_steps,0),
+        takeovers:turns.reduce((total,t)=>total+t.takeovers,0),
+        repeated_takeovers:turns.reduce((total,t)=>total+t.repeated_takeovers,0),
+        takeover_reasons:takeovers,
         actions:turns.reduce((total,t)=>total+t.actions,0),
         cards:turns.reduce((total,t)=>total+t.cards_by_source.jev+t.cards_by_source.planner+t.cards_by_source.planned,0),
         jev_calls:calls.jev,inference_ms:usage.inference_ms,

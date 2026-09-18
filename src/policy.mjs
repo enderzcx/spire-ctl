@@ -265,6 +265,10 @@ export function verifyStableProposal(state,options,option){
   const living=enemiesOf(state);
   if(!attacks.known||!living.length)return {ok:false,reason:'Combat arithmetic unavailable'};
   if(!option||option.command?.action!=='play_card')return {ok:false,reason:'Not a card play'};
+  // The proposal must be one of the options the program actually offered, with
+  // the label it advertised: a same-id different-text answer is not verifiable.
+  const offered=options.find(candidate=>candidate.id===option.id);
+  if(!offered||offered.label!==option.label)return {ok:false,reason:'Proposal does not match an advertised option'};
   const hp=Number(state.player?.hp??0),block=Number(state.player?.block??0);
   const gap=Math.max(0,attacks.total-block);
   const label=String(option.label??'');

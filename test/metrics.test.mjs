@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {analyzeTurns,turnMetrics,stats,actions,splitRuns} from '../src/metrics.mjs';
+import {analyzeTurns,turnMetrics,stats,actions,splitRuns,protocols,filterProtocol} from '../src/metrics.mjs';
 
 const T0=Date.parse('2026-09-18T01:00:00.000Z');
 const at=offset=>new Date(T0+offset).toISOString();
@@ -147,4 +147,27 @@ test('model inference stats describe single calls, not per-turn sums',()=>{
   assert.equal(report.batches[0].stats.inference.count,2);
   assert.equal(report.batches[0].stats.inference.median_ms,400);
   assert.equal(report.batches[0].summary.jev_calls_within_turns,2);
+});
+
+test('reports separate protocol windows and the review counters',()=>{
+  const rows=[
+    {...dispatch(0,{round:1}),protocol:2}, {...verified(1000,{action_ms:900,round:1}),protocol:2},
+    {...dispatch(2000,{round:1}),protocol:3},
+    {...verified(3000,{action_ms:900,round:1}),protocol:3},
+    {...decision(3100,{inference_ms:200,confidence:.3}),protocol:3},
+    {at:at(3150),event:'ask',source:'jev',requests:3,confidence:.3,protocol:3},
+    {at:at(3200),event:'takeover',source:'planner',reason:'low_confidence',repeat_count:1,protocol:3},
+    {at:at(3300),event:'takeover',source:'planner',reason:'repeated_state',repeat_count:2,protocol:3},
+    {at:at(3400),event:'local_decision',source:'local',kind:'strategy',reason:'strategy s1',protocol:3},
+  ];
+  assert.deepEqual(protocols(rows),[{protocol:3,count:7},{protocol:2,count:2}]);
+  const scoped=turnMetrics(filterProtocol(rows,3),1);
+  const summary=scoped.batches[0].summary;
+  assert.equal(scoped.batches[0].protocol,3);
+  assert.equal(summary.jev_requests,3,'requests are counted per model call, not per turn');
+  assert.equal(summary.takeovers,2);
+  assert.equal(summary.repeated_takeovers,1);
+  assert.equal(summary.strategy_steps,1);
+  assert.deepEqual(summary.takeover_reasons,[{reason:'low_confidence',count:1},{reason:'repeated_state',count:1}]);
+  assert.equal(turnMetrics(filterProtocol(rows,2),1).batches[0].summary.takeovers,0);
 });

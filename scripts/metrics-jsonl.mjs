@@ -4,15 +4,16 @@
 //   node scripts/metrics-jsonl.mjs .runtime/events.jsonl --turns 6
 //   node scripts/metrics-jsonl.mjs .runtime/events.jsonl --batch 2 --compact
 import {readFile} from 'node:fs/promises';
-import {turnMetrics} from '../src/metrics.mjs';
+import {turnMetrics,protocols,filterProtocol} from '../src/metrics.mjs';
 
 function parseArgs(argv){
-  const options={file:argv[0]??'.runtime/events.jsonl',turns:5,batch:3,compact:false};
+  const options={file:argv[0]??'.runtime/events.jsonl',turns:5,batch:3,compact:false,protocol:null};
   for(let index=1;index<argv.length;index++){
     const flag=argv[index];
     if(flag==='--compact')options.compact=true;
     else if(flag==='--turns')options.turns=Number(argv[++index]);
     else if(flag==='--batch')options.batch=Number(argv[++index]);
+    else if(flag==='--protocol')options.protocol=argv[++index]==='all'?null:Number(argv[++index]);
     else if(!flag.startsWith('--')&&options.file==='.runtime/events.jsonl')options.file=flag;
   }
   return options;
@@ -26,7 +27,9 @@ function table(report,limit){
   for(const batch of report.batches){
     const summary=batch.summary;
     lines.push('');
-    lines.push(`run ${batch.batch}: turns=${summary.turns_total} actions=${summary.actions} cards=${summary.cards} jev_calls=${summary.jev_calls} planned_turns=${summary.applyable_batches} planned_steps=${summary.applyable_steps}`);
+    lines.push(`run ${batch.batch} (protocol ${batch.protocol}): turns=${summary.turns_total} actions=${summary.actions} cards=${summary.cards} planned_turns=${summary.applyable_batches} planned_steps=${summary.applyable_steps}`);
+    lines.push(`  model: jev_calls=${summary.jev_calls} jev_requests=${summary.jev_requests} | takeovers=${summary.takeovers} (repeated_state=${summary.repeated_takeovers}) | strategy_steps=${summary.strategy_steps}`);
+    if(summary.takeover_reasons.length)lines.push(`  takeover reasons: ${summary.takeover_reasons.map(r=>`${r.reason}×${r.count}`).join(', ')}`);
     lines.push(`  turn_ms ${ms(batch.stats.turn.median_ms)} median / ${ms(batch.stats.turn.max_ms)} max | action_ms ${ms(batch.stats.action.median_ms)} median | agent_gap ${ms(batch.stats.agent_gap.median_ms)} median / ${ms(batch.stats.agent_gap.max_ms)} max`);
     if(summary.stops.length)lines.push(`  stops: ${summary.stops.map(s=>`${s.reason}×${s.count}`).join(', ')}`);
     const shown=batch.turns.slice(-limit);
@@ -49,7 +52,11 @@ function table(report,limit){
 const options=parseArgs(process.argv.slice(2));
 const rows=(await readFile(options.file,'utf8')).trim().split('\n').filter(Boolean)
   .map((line,index)=>{try{return JSON.parse(line);}catch{return {event:'unparsed',index};}});
-const report=turnMetrics(rows,options.batch);
+const available=protocols(rows);
+const scoped=filterProtocol(rows,options.protocol);
+const report=turnMetrics(scoped,options.batch);
+if(available.length>1||options.protocol!==null)
+  console.log(`protocols present: ${available.map(p=>`${p.protocol}(${p.count})`).join(', ')}${options.protocol===null?' — reporting all':` — reporting ${options.protocol}`}`);
 if(options.compact){
   console.log(JSON.stringify({runs:report.runs,batches:report.batches.map(b=>({batch:b.batch,summary:b.summary,stats:b.stats})),
     recent:report.recent,planned_turns:report.planned_turns},null,2));

@@ -21,7 +21,9 @@ export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,
     if(!answer||!options.some(o=>o.id===answer.choice)||!Number.isFinite(answer.confidence))throw Error('Invalid Jev decision');
     return {option:options.find(o=>o.id===answer.choice),answer,model:result.model,usage:result.usage};
   }
-  const first=await ask(criteria);
+  let requests=0;
+  const askCounted=async menu=>{requests++;return ask(menu);};
+  const first=await askCounted(criteria);
   let answer=first;
 
   // A low-confidence answer over the whole hand is not evidence that the
@@ -32,7 +34,7 @@ export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,
     const narrowed=options.filter(option=>shortlist.options.some(o=>o.id===option.id));
     if(narrowed.length&&narrowed.length<options.length){
       const menu=Object.fromEntries(narrowed.map(o=>[o.id,`${o.label} [program: ${shortlist.reason}]`]));
-      const retry=await ask(menu);
+      const retry=await askCounted(menu);
       if(retry.answer.confidence>=answer.answer.confidence)
         answer={...retry,narrowed:true,shortlist_reason:shortlist.reason};
     }
@@ -42,13 +44,13 @@ export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,
   // answers give the caller a stability signal it can verify; this module never
   // lowers the bar itself and still reports the original low confidence.
   if(answer.answer.confidence<.5){
-    const probe=await ask(answer.narrowed
+    const probe=await askCounted(answer.narrowed
       ? Object.fromEntries(options.filter(o=>shortlist.options.some(s=>s.id===o.id)).map(o=>[o.id,`${o.label} [program: ${shortlist.reason}]`]))
       : criteria);
     answer={...answer,stable:probe.answer.choice===answer.answer.choice,
       second_confidence:probe.answer.confidence,model:probe.model??answer.model};
   }
 
-  return {...answer,inference_ms:Math.round(performance.now()-started),
+  return {...answer,requests,inference_ms:Math.round(performance.now()-started),
     retried:Boolean(answer.narrowed),narrowed:Boolean(answer.narrowed),stable:answer.stable??false};
 }

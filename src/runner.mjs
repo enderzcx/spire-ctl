@@ -1,7 +1,8 @@
 import {mkdir,readFile,writeFile,appendFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {actions,inCombat,route,stateId,incomingDamage} from './game.mjs';
-import {localPolicy,guardOption,nextLocalPlay,verifyStableProposal} from './policy.mjs';
+import {localPolicy,nextLocalPlay,verifyStableProposal} from './policy.mjs';
+import {loadStrategy,strategyApplies,strategyPreference,seenHandoff,noteHandoff} from './strategy.mjs';
 
 export function envelope(state){
   const options=actions(state),incoming=inCombat(state)?incomingDamage(state):null;
@@ -17,7 +18,10 @@ export async function withLock(dir,fn){
   try{return await fn();}finally{await rm(lock,{recursive:true});}
 }
 
-export function recorder(dir){return async data=>{await mkdir(dir,{recursive:true});await appendFile(join(dir,'events.jsonl'),JSON.stringify({at:new Date().toISOString(),...data})+'\n');};}
+// Every event carries the decision-protocol version it was produced under, so a
+// report can split windows instead of averaging two different systems together.
+export const PROTOCOL=3;
+export function recorder(dir){return async data=>{await mkdir(dir,{recursive:true});await appendFile(join(dir,'events.jsonl'),JSON.stringify({at:new Date().toISOString(),protocol:PROTOCOL,...data})+'\n');};}
 
 export async function execute(game,expectedId,optionId,{dir,control=dir,record=recorder(dir),source='planner'}={}){
   try{await readFile(join(control,'HALTED'));throw Error('Previous action outcome unknown: inspect game and clear the halt explicitly');}catch(e){if(e.code!=='ENOENT')throw e;}
@@ -87,6 +91,21 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
           }
         }
       }
+      // A previously agreed strategy keeps the loop running without another
+      // round trip, but only while its explicit conditions still hold and only
+      // against options this state actually advertises.
+      if(!option){
+        const saved=await loadStrategy(dir);
+        if(saved){
+          const applies=strategyApplies(saved,s);
+          const picked=applies.ok?strategyPreference(saved,env.options.filter(o=>o.command.action!=='use_potion')):null;
+          if(picked){
+            option=picked.option;source='local';
+            local={kind:'strategy',reason:`Strategy ${saved.strategy_id}: ${picked.preference.why??picked.preference.match}`,
+              evidence:{strategy_id:saved.strategy_id,conditions:saved.conditions.length}};
+          }
+        }
+      }
       if(!option){
         // A model call needs a real question. One playable card plus "end turn",
         // or an empty hand, is not a choice: asking anyway costs 0.6-1.2s and
@@ -107,6 +126,11 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
         const shortlist=decision?.kind==='shortlist'?decision:null;
         const d=await decide(s,candidates,shortlist);
         tokens+=d.usage?.input_tokens??0;
+        // Requests actually sent to the fast model, including the narrowed
+        // retry and the stability probe, so a per-turn request count is real.
+        await record({event:'ask',source:'jev',state_id:env.state_id,
+          requests:d.requests??1,narrowed:d.answer?.narrowed??false,stable:d.answer?.stable??false,
+          confidence:d.answer?.confidence??null,playable_cards:candidates.filter(o=>o.command.action==='play_card').length});
         // Hoist the shortlist provenance so the log shows, without reading the
         // model answer, whether a narrowed menu produced this decision.
         await record({event:'decision',source:'jev',state_id:env.state_id,...d,
@@ -118,23 +142,33 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
           //   1. a fully-determined local play (guard / confirmed lethal /
           //      the only legal card),
           //   2. the same answer twice with the proposal verified as safe.
-          const fallback=policy?guardOption(s,env.options)??nextLocalPlay(s,env.options):null;
           const stable=d.answer.stable&&d.answer.second_confidence<.5&&policy
             ?verifyStableProposal(s,env.options,d.option):null;
           if(stable?.ok){
             option=d.option;source='local';
             local={kind:'jev_stable',reason:`Fast model repeated the same choice at ${d.answer.confidence.toFixed(2)}; ${stable.reason}`,
               evidence:{confidence:d.answer.confidence,second:d.answer.second_confidence}};
-          }else if(fallback){
-            option=fallback.option;source='local';local={...fallback,low_confidence:d.answer.confidence};
           }else{
-            return {reason:'low_confidence',proposal:d,steps,...env,
+            // The fast model's answer could not be used and the program has no
+            // verified substitute. Substituting a card the program happens to
+            // prefer would be the program making the tactical choice, so the
+            // decision goes back instead of being quietly replaced. If this
+            // exact state was already handed over, asking again cannot help:
+            // the packet is marked as a repeat so the caller supplies a
+            // strategy or a decision instead of another sample.
+            const prior=await seenHandoff(dir,env.state_id);
+            const reason=prior?'repeated_state':'low_confidence';
+            await noteHandoff(dir,env.state_id,reason);
+            await record({event:'takeover',source:'planner',reason,state_id:env.state_id,
+              repeat_count:(prior?.count??0)+1,confidence:d.answer?.confidence??null,
+              stable_rejection:stable?.reason??'no stable proposal'});
+            return {reason,proposal:d,steps,...env,repeat_count:(prior?.count??0)+1,
+              instruction:'Return a decision, or a strategy with explicit conditions and expiry',
               stable_rejection:stable?.reason??'no stable proposal'};
           }
         }else{
           option=d.option;source='jev';
         }
-        option=d.option;source='jev';
       }
     }
     if(local)await record({event:'local_decision',source:'local',state_id:env.state_id,
