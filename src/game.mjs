@@ -62,7 +62,9 @@ export function actions(s,{deduplicate=true}={}) {
   } else if(s.state_type==='shop') {
     // Schema-specific purchases are advertised only when explicitly affordable.
     for(const o of s.shop?.items??[])if(o.is_stocked && o.can_afford===true && o.price<=s.player.gold)add({action:'shop_purchase',index:o.index},JSON.stringify(o));
-    if(s.shop?.can_proceed)add({action:'proceed'},'Leave shop');
+    // The bridge closes the inventory first, then enables and presses Proceed.
+    // can_proceed describes the button before that close, not this compound action.
+    if(s.shop&&!s.shop.error)add({action:'proceed'},'Close inventory and leave shop');
   } else if(s.state_type==='menu') {
     // No starting/abandoning runs, quitting, profile deletion, or multiplayer.
     for(const o of s.options??[]) {

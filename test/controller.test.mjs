@@ -47,10 +47,10 @@ test('card-selection overlays expose picks and only valid confirmation actions',
   x.card_select.preview_showing=true;x.card_select.can_confirm=true;
   assert.deepEqual(actions(x).map(a=>a.command.action),['confirm_selection','cancel_selection']);
 });
-test('disabled rest choices and unavailable shop actions are omitted',()=>{
+test('disabled rest and unaffordable purchases are omitted; shop exit closes inventory',()=>{
   assert.deepEqual(actions({state_type:'rest_site',rest_site:{options:[{index:0,is_enabled:false},{index:1,is_enabled:true}]}}).map(o=>o.command.index),[1]);
   const x={state_type:'shop',player:{gold:100},shop:{items:[{index:0,price:50,is_stocked:true,can_afford:false}],can_proceed:false}};
-  assert.deepEqual(actions(x),[]);x.shop.items[0].can_afford=true;assert.equal(actions(x).length,1);
+  assert.deepEqual(actions(x).map(a=>a.command.action),['proceed']);x.shop.items[0].can_afford=true;assert.equal(actions(x).length,2);
 });
 test('stale planner action never reaches the game',()=>temporary(async dir=>{
   let sent=0;await assert.rejects(execute({read:async()=>s(),send:async()=>sent++},'old','0',{dir}),/Stale/);assert.equal(sent,0);
