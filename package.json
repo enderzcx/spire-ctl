@@ -1,6 +1,6 @@
 {
   "name": "spire-jev",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "description": "A model-independent Slay the Spire 2 controller with Jev fast decisions and explicit planner handoffs",
   "type": "module",

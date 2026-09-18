@@ -12,3 +12,4 @@ out/
 .reasonix/
 reasonix.toml
 .DS_Store
+.grok-companion/

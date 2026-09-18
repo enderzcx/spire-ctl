@@ -32,7 +32,7 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
       const applied=strategyApplies(agreed,s,{inCall:agreed.in_call===true});
       if(!applied.ok){
         await record({event:'takeover',source:'planner',reason:`invalid strategy: ${applied.reason}`,
-          state_id:env.state_id});
+          state_id:env.state_id,state:{run:s.run,battle:{round:s.battle?.round}}});
         return {reason:`invalid strategy: ${applied.reason}`,steps,...env,
           instruction:'Return a decision, or a strategy with explicit conditions and expiry'};
       }
@@ -46,16 +46,16 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
         ask:decide,priorHandoff:prior,remainingSteps:max-steps});
     }catch(error){
       const requests=Number(error.requests??1);
-      await record({event:'ask',source:'jev',state_id:env.state_id,requests,
+      await record({event:'ask',source:'jev',state_id:env.state_id,state:{run:s.run,battle:{round:s.battle?.round}},requests,
         usage:error.usage??{unavailable:true},error:error.message});
       throw error;
     }
     if(decision.usage&&!decision.usage.unavailable)tokens+=Number(decision.usage.input_tokens??0);
-    if(decision.requests)await record({event:'ask',source:'jev',state_id:env.state_id,
+    if(decision.requests)await record({event:'ask',source:'jev',state_id:env.state_id,state:{run:s.run,battle:{round:s.battle?.round}},
       requests:decision.requests,confidence:decision.proposal?.answer?.confidence??null,
       playable_cards:env.options.filter(o=>o.command.action==='play_card').length,
       usage:decision.usage,planned:decision.kind==='execute_prefix'});
-    if(decision.proposal)await record({event:'decision',source:'jev',state_id:env.state_id,...decision.proposal,
+    if(decision.proposal)await record({event:'decision',source:'jev',state_id:env.state_id,state:{run:s.run,battle:{round:s.battle?.round}},...decision.proposal,
       playable_cards:env.options.filter(o=>o.command.action==='play_card').length,
       decision_source:decision.source});
     if(decision.kind==='handoff'){
@@ -71,18 +71,18 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
       }
       if(decision.reason==='low_confidence'||decision.reason==='low_confidence_candidate'||decision.reason==='repeated_state'){
         const noted=await noteHandoff(dir,key,decision.reason);
-        await record({event:'takeover',source:'planner',reason:decision.reason,state_id:env.state_id,
+        await record({event:'takeover',source:'planner',reason:decision.reason,state_id:env.state_id,state:{run:s.run,battle:{round:s.battle?.round}},
           repeat_count:noted.count,confidence:decision.proposal?.answer?.confidence??null});
         return {reason:decision.reason,proposal:decision.proposal,steps,...env,repeat_count:noted.count,
           instruction:decision.instruction??'Return a decision, or a strategy with explicit conditions and expiry'};
       }
-      await record({event:'takeover',source:'planner',reason:decision.reason,state_id:env.state_id,
+      await record({event:'takeover',source:'planner',reason:decision.reason,state_id:env.state_id,state:{run:s.run,battle:{round:s.battle?.round}},
         confidence:decision.proposal?.answer?.confidence??null});
       return {reason:decision.reason,steps,...env,instruction:decision.instruction,
         guard:decision.guard,attrition:decision.attrition,proposal:decision.proposal,
         local_evidence:decision.local_evidence};
     }
-    if(decision.local)await record({event:'local_decision',source:'local',state_id:env.state_id,
+    if(decision.local)await record({event:'local_decision',source:'local',state_id:env.state_id,state:{run:s.run,battle:{round:s.battle?.round}},
       kind:decision.local.kind,reason:decision.reason,evidence:decision.local.evidence,option:decision.option,
       line:decision.local.kind==='kill'?(decision.local.options??[]).map(o=>o.label):undefined});
     if(decision.kind==='execute_prefix'){

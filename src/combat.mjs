@@ -26,6 +26,8 @@ export function incomingAttacks(state){
   for(const enemy of livingEnemies(state)){
     let damage=0;
     for(const intent of enemy.intents??[]){
+      if(/unknown|未知|[?？]/i.test(`${intent.type??''} ${intent.title??''} ${intent.label??''}`))
+        return {known:false,total:null,perEnemy:[]};
       if(!String(intent.type??'').includes('Attack')&&!String(intent.title??'').includes('攻'))continue;
       const value=intentDamage(intent);
       if(value===null)return {known:false,total:null,perEnemy:[]};
@@ -59,18 +61,16 @@ export function parseCost(raw){
   return {known:true,value:Number(text)};
 }
 
-function effectText(text){
-  return String(text??'')
-    .replace(/\s*->\s*.*$/,'')
-    .replace(/\(\s*energy\s+[^)]+\)/ig,'')
-    .replace(/^[^:]+:\s*/,'')
-    .replace(/[。.\s]+$/u,'')
-    .trim();
+function effectText(text,{label=false}={}){
+  let raw=String(text??'');
+  if(label)raw=raw.replace(/\s*->\s*.*$/,'')
+    .replace(/\(\s*energy\s+[^)]+\)/ig,'').replace(/^[^:]+:\s*/,'');
+  return raw.replace(/[。.\s]+$/u,'').trim();
 }
 
 // Exact templates only. Leftover clauses, conditionals and triggers are unknown.
-export function parseCompleteEffect(text){
-  const body=effectText(text);
+export function parseCompleteEffect(text,options={}){
+  const body=effectText(text,options);
   const unknown={known:false,complete:false,damage:null,hits:1,block:null,allEnemies:false,original:String(text??'')};
   if(!body)return unknown;
   let match=body.match(/^造成(\d+)点伤害(?:(\d+)次|(两|二|三|四|五)次)?(?:对(?:所有|全部)敌人)?$/);
@@ -104,13 +104,13 @@ export function parseEffect(text){
 }
 
 export function optionDamage(option){
-  const effect=parseCompleteEffect(option?.label);
+  const effect=parseCompleteEffect(option?.label,{label:true});
   if(!effect.complete||!isNum(effect.damage))return null;
   return effect.damage*(effect.hits||1);
 }
 
 export function optionBlock(option){
-  const effect=parseCompleteEffect(option?.label);
+  const effect=parseCompleteEffect(option?.label,{label:true});
   return effect.complete&&isNum(effect.block)?effect.block:0;
 }
 
@@ -118,7 +118,7 @@ export function optionTarget(option,state){
   const living=livingEnemies(state);
   const entityId=option?.command?.target;
   if(entityId)return living.find(enemy=>enemy.entity_id===entityId)??null;
-  if(!Number.isFinite(optionDamage(option))&&!parseCompleteEffect(option?.label).allEnemies)return null;
+  if(!Number.isFinite(optionDamage(option))&&!parseCompleteEffect(option?.label,{label:true}).allEnemies)return null;
   return living.length===1?living[0]:null;
 }
 
@@ -128,12 +128,23 @@ export function cardCost(state,option){
   return parseCost(card?.cost);
 }
 
+// Observed on the supported bridge: Burning Blood has no in-combat card
+// trigger; its sole effect is six HP at victory. Any changed/missing wording
+// stays unknown, as do all other relics. Never generalize from the name alone.
+function knownBurningBlood(relic){
+  return relic?.id==='BURNING_BLOOD'&&[
+    '在战斗结束时，回复6点生命。',
+    'At the end of combat, heal 6 HP.'
+  ].includes(String(relic.description??'').trim());
+}
+
 export function combatContext(state){
   const playerStatus=state.player?.status??[];
   const relics=state.player?.relics??[];
   const enemyStatus=(state.battle?.enemies??[]).flatMap(enemy=>enemy.status??[]);
   const unknownPlayer=playerStatus.filter(Boolean);
-  const unknownRelics=relics.filter(Boolean);
+  const bloodOnly=relics.length===1&&knownBurningBlood(relics[0])&&Number.isFinite(state.player?.max_hp);
+  const unknownRelics=bloodOnly?[]:relics.filter(Boolean);
   const unknownEnemy=enemyStatus.filter(Boolean);
   return {
     known:!unknownPlayer.length&&!unknownRelics.length&&!unknownEnemy.length,
@@ -142,22 +153,28 @@ export function combatContext(state){
 }
 
 export function optionEffect(option,state){
-  const parsed=parseCompleteEffect(option?.label);
+  const parsed=parseCompleteEffect(option?.label,{label:true});
   const card=(state.player?.hand??[]).find(entry=>entry.index===option?.command?.card_index);
-  const fromCard=parseCompleteEffect(card?.description);
-  const effect=parsed.complete?parsed:fromCard;
+  let liveText=card?.description;
+  // Some adapters prefix a description with the card name. Only strip that
+  // exact name, never an arbitrary condition such as "If injured: ...".
+  if(typeof liveText==='string'&&card?.name&&liveText.startsWith(`${card.name}:`))
+    liveText=liveText.slice(card.name.length+1).trim();
+  const fromCard=parseCompleteEffect(liveText);
+  const effect=typeof liveText==='string'&&liveText.trim()?fromCard:parsed;
   const cost=cardCost(state,option);
+  const noExtraCost=card?.star_cost==null||String(card.star_cost).trim()==='0';
   const target=optionTarget(option,state);
   const total=effect.complete&&isNum(effect.damage)?effect.damage*(effect.hits||1):null;
   const context=combatContext(state);
-  const modeled=Boolean(effect.complete&&cost.known&&context.known
+  const modeled=Boolean(effect.complete&&cost.known&&noExtraCost&&context.known
     &&(total===null||target||effect.allEnemies||option?.command?.action!=='play_card'));
   return {
     ...effect,
     known:modeled,
     total,
     cost:cost.known?cost.value:null,
-    costKnown:cost.known,
+    costKnown:cost.known&&noExtraCost,
     contextKnown:context.known,
     target,
     modeled,
@@ -219,6 +236,8 @@ export function projectPlay(state,option){
       apply(enemy);
     }
   }
+  if(kills>0&&livingEnemies(next).length===0&&(next.player.relics??[]).some(knownBurningBlood))
+    next.player.hp=Math.min(next.player.max_hp,next.player.hp+6);
   const index=next.player.hand.findIndex(card=>card.index===option.command.card_index);
   if(index<0)return {known:false,reason:'card not in hand',effect};
   next.player.hand.splice(index,1);

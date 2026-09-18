@@ -1,3 +1,4 @@
+import {inCombat} from './game.mjs';
 // Turn-level observability derived from the private event log. Read-only.
 // Nothing here creates another game writer: it only reads JSONL rows.
 //
@@ -17,10 +18,11 @@
 // Timing vocabulary (an estimate of observed wall time, not a simulation):
 //   action_ms    = bridge round trip until the settlement probe agrees. This is
 //                  game animation and settlement, not model time.
-//   agent_gap_ms = previous action settled to next dispatch inside one turn.
-//   turn_ms      = first dispatch of the turn to the dispatch of the action that
-//                  ended it (or to the last settled action of a turn that was
-//                  left by something else, e.g. death).
+//   agent_gap_ms = previous action settled to next dispatch inside one turn;
+//                  includes model work in that gap, so do not add inference_ms again.
+//   turn_ms      = observed first decision/dispatch through its last settlement.
+//                  Only a verified turn/room boundary marks complete; open turns
+//                  are excluded from completed-turn timing statistics.
 
 const isObject=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const isNum=value=>Number.isFinite(value);
@@ -95,20 +97,21 @@ export function filterProtocol(rows,protocol){
 }
 
 export function splitRuns(rows){
-  const boundaries=[];
-  let cursor=-1;
-  for(let index=0;index<rows.length;index++){
-    const row=rows[index];
+  const batches=[];let current=[],priorRun=null,protocol;
+  for(const row of rows){
     if(!isObject(row))continue;
-    const run=row.before?.run??row.after?.run;
-    if(!isNum(run?.floor))continue;
-    if(cursor<0){boundaries.push(index);cursor=index;continue;}
-    const priorRun=rows[cursor].before?.run??rows[cursor].after?.run;
-    if(run.act<priorRun.act||(run.act===priorRun.act&&run.floor<priorRun.floor)){boundaries.push(index);cursor=index;}
-    else cursor=index;
+    const nextProtocol=row.protocol??'unversioned';
+    const run=row.before?.run??row.after?.run??row.state?.run;
+    const reset=priorRun&&isNum(run?.floor)&&
+      (run.act<priorRun.act||(run.act===priorRun.act&&run.floor<priorRun.floor));
+    if(current.length&&(nextProtocol!==protocol||reset)){
+      batches.push(current);current=[];priorRun=null;
+    }
+    current.push(row);protocol=nextProtocol;
+    if(isNum(run?.floor))priorRun=run;
   }
-  if(!boundaries.length)return [rows];
-  return boundaries.map((start,position)=>rows.slice(start,boundaries[position+1]??rows.length));
+  if(current.length)batches.push(current);
+  return batches.length?batches:[[]];
 }
 
 // Every action observed in the log, in dispatch order, with the turn it belongs
@@ -122,8 +125,8 @@ export function actions(rows){
     if(row.event==='dispatch'||row.event==='plan_dispatch'){
       const planned=row.event==='plan_dispatch';
       const command=row.option?.command??{};
-      const turn=planned?current?.turn:turnKey(row.before);
-      const record={event:row.event,planned,source:planned?'planned':(row.source??'planner'),
+      const turn=row.before?turnKey(row.before):(planned?current?.turn:'unknown');
+      const record={event:row.event,planned,source:row.source??(planned?'planned':'planner'),
         action:command.action??'unknown',at_ms:at,round:roundOf(row.before),turn:turn??'unknown',
         label:row.option?.label??'',card_index:command.card_index,ended_turn:command.action==='end_turn',
         plan_step:isNum(row.step)?row.step:null,action_ms:null};
@@ -133,17 +136,26 @@ export function actions(rows){
     if(!current)continue;
     if(row.event==='verified'||row.event==='plan_verified'){
       current.action_ms=isNum(row.action_ms)?row.action_ms:null;
-      // `at` is recorded right after the mutation round trip, before the
-      // settlement probe finishes, so the observed settle moment is at+action_ms.
+      // The verification event is written AFTER the settlement probe.
+      // Its timestamp already includes action_ms; adding it again hides pauses.
       const verifiedAt=atMs(row);
-      current.settled_at=verifiedAt!==null&&isNum(row.action_ms)?verifiedAt+row.action_ms:verifiedAt;
+      current.settled_at=verifiedAt;
       current.after_round=roundOf(row.after);
       current.settled=true;
+      current.turn_left=Boolean(row.after&&(current.ended_turn||!inCombat(row.after)||turnKey(row.after)!==current.turn));
       current.plan_verified=row.event==='plan_verified';
       continue;
     }
+    if(row.event==='plan_boundary'){
+      current.action_ms=isNum(row.action_ms)?row.action_ms:null;
+      current.settled_at=at;current.boundary=true;
+      current.settled=row.confirmed===true;current.plan_verified=current.settled;
+      current.turn_left=current.settled;
+      continue;
+    }
     if(row.event==='plan_deviation'||row.event==='plan_invalidated_before_action'||row.event==='halted'){
-      current.failed=true;current.failure=reasonOf(row);
+      if(!current.failed)current.failure=reasonOf(row);
+      current.failed=true;
     }
   }
   return out;
@@ -160,6 +172,17 @@ export function analyzeTurns(rows){
   const turnFor=(key)=>{
     if(!byId.has(key)){const turn=newTurn(key);byId.set(key,turn);turns.push(turn);}
     return byId.get(key);
+  };
+  const stateTurns=new Map(rows.filter(row=>row?.state_id&&row.before)
+    .map(row=>[row.state_id,turnKey(row.before)]));
+  const ownerFor=row=>{
+    const explicit=turnKey(row.state??row.before??row.after);
+    if(explicit!=='unknown')return turnFor(explicit);
+    if(stateTurns.has(row.state_id))return turnFor(stateTurns.get(row.state_id));
+    if(row.protocol>=4)return turnFor('unknown');
+    const at=atMs(row);
+    const previous=list.findLast(action=>action.at_ms!==null&&at!==null&&action.at_ms<=at);
+    return turnFor(previous?.turn??list[0]?.turn??'unknown');
   };
   // Turn ownership is decided by each action's own dispatch round, so a gap that
   // spans a hand-off lands on the turn that was interrupted, not on the next one.
@@ -195,12 +218,9 @@ export function analyzeTurns(rows){
     previous={turn:record.turn,settled_ms:settled};
   }
 
-  for(const row of rows){
-    if(!isObject(row)||!['halted','plan_deviation'].includes(row.event))continue;
-    const reason=reasonOf(row);
-    const owner=[...byId.values()].find(turn=>turn.start_ms!==null&&turn.end_ms!==null&&atMs(row)>=turn.start_ms&&atMs(row)<=turn.end_ms)
-      ??turns.at(-1);
-    if(!owner)continue;
+  for(const action of list){
+    if(!action.failed)continue;
+    const owner=turnFor(action.turn),reason=action.failure;
     if(!owner.interruptions.includes(reason))owner.interruptions.push(reason);
     stops.set(reason,(stops.get(reason)??0)+1);
   }
@@ -213,10 +233,9 @@ export function analyzeTurns(rows){
     const input=isNum(row.usage?.input_tokens)?row.usage.input_tokens:0,output=isNum(row.usage?.output_tokens)?row.usage.output_tokens:0;
     inputTokens+=input;outputTokens+=output;
     const at=atMs(row);
-    const owner=[...byId.values()].find(turn=>turn.start_ms!==null&&turn.end_ms!==null&&at!==null&&at>=turn.start_ms&&at<=turn.end_ms)
-      ??turns.at(-1);
-    if(!owner)continue;
+    const owner=ownerFor(row);
     owner.model_calls++;owner.inference_ms+=inference;owner.inferences_ms.push(inference);
+    if(at!==null)owner.start_ms=Math.min(owner.start_ms??Infinity,at-inference);
     owner.input_tokens+=input;owner.output_tokens+=output;
     if(at!==null)owner.as_of_ms=Math.max(owner.as_of_ms??at,at);
   }
@@ -230,10 +249,10 @@ export function analyzeTurns(rows){
     const kind=row.event;
     if(kind!=='ask'&&kind!=='takeover'&&!(kind==='local_decision'&&row.kind==='strategy'))continue;
     const at=atMs(row);
-    const owner=[...byId.values()].find(turn=>turn.start_ms!==null&&turn.end_ms!==null&&at!==null&&at>=turn.start_ms&&at<=turn.end_ms)
-      ??turns.at(-1);
-    if(!owner)continue;
-    if(kind==='ask'){owner.model_requests+=Number(row.requests??1);continue;}
+    const owner=ownerFor(row);
+    if(kind==='ask'){owner.model_requests+=Number(row.requests??1);
+      if(row.usage?.unavailable)owner.usage_unavailable_requests=(owner.usage_unavailable_requests??0)+Number(row.requests??1);
+      continue;}
     if(kind==='takeover'){
       owner.takeovers++;
       if(row.reason==='repeated_state')owner.repeated_takeovers++;
@@ -249,7 +268,7 @@ export function analyzeTurns(rows){
     if(turn.start_ms!==null&&turn.end_ms!==null&&turn.end_ms>turn.start_ms)
       turn.turn_ms=Math.max(0,turn.end_ms-turn.start_ms);
     else if(Number.isFinite(turn.action_ms))turn.turn_ms=turn.action_ms;
-    turn.complete=turn.end_ms!==null;
+    turn.complete=list.some(action=>action.turn===turn.turn&&action.settled&&action.turn_left);
     turn.stop=!!turn.interruptions.length;
   }
 
@@ -276,12 +295,13 @@ export function turnMetrics(rows,batch=3){
       summary:{turns_total:turns.length,turns_complete:turns.filter(t=>t.complete).length,
         jev_calls_within_turns:turns.reduce((total,t)=>total+t.model_calls,0),
         jev_requests:turns.reduce((total,t)=>total+t.model_requests,0),
+        usage_unavailable_requests:turns.reduce((total,t)=>total+(t.usage_unavailable_requests??0),0),
         strategy_steps:turns.reduce((total,t)=>total+t.strategy_steps,0),
         takeovers:turns.reduce((total,t)=>total+t.takeovers,0),
         repeated_takeovers:turns.reduce((total,t)=>total+t.repeated_takeovers,0),
         takeover_reasons:takeovers,
         actions:turns.reduce((total,t)=>total+t.actions,0),
-        cards:turns.reduce((total,t)=>total+t.cards_by_source.jev+t.cards_by_source.planner+t.cards_by_source.planned,0),
+        cards:turns.reduce((total,t)=>total+Object.values(t.cards_by_source).reduce((sum,n)=>sum+n,0),0),
         jev_calls:calls.jev,inference_ms:usage.inference_ms,
         input_tokens:usage.input_tokens,output_tokens:usage.output_tokens,
         applyable_batches:turns.filter(t=>t.plan_steps>0).length,
@@ -291,7 +311,7 @@ export function turnMetrics(rows,batch=3){
           interruptions:last.interruptions,actions:last.actions,
           cards:last.cards_by_source,plan_steps:last.plan_steps,turn_ms:last.turn_ms??null,
           action_ms:last.action_ms,agent_gap_ms:last.agent_gap_ms}:null},
-      stats:{turn:stats(turns.map(t=>t.turn_ms??0).filter(isNum)),
+      stats:{turn:stats(turns.filter(t=>t.complete).map(t=>t.turn_ms).filter(isNum)),
         action:stats(turns.map(t=>t.action_ms)),agent_gap:stats(turns.map(t=>t.agent_gap_ms)),
         inference:stats(turns.flatMap(t=>t.inferences_ms))}};
   });
@@ -299,7 +319,7 @@ export function turnMetrics(rows,batch=3){
   const tail=summaries.slice(-batch);
   return {runs:summaries.length,batches:tail,
     recent:{batch:tail.length,
-      turn:stats(tail.flatMap(s=>s.stats.turn.count?s.turns.map(t=>t.turn_ms??0).filter(isNum):[])),
+      turn:stats(tail.flatMap(s=>s.stats.turn.count?s.turns.filter(t=>t.complete).map(t=>t.turn_ms).filter(isNum):[])),
       inference:stats(tail.flatMap(s=>s.turns.flatMap(t=>t.inferences_ms)))},
     planned_turns:withPlans.length?{
       turns:withPlans.reduce((total,s)=>total+s.turns.filter(t=>t.plan_steps>0).length,0),

@@ -2,14 +2,16 @@
 // A thrown send error is not proof of no side effects; the halt stays.
 import {mkdir,readFile,writeFile,appendFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
+import {readFileSync} from 'node:fs';
 import {actions,inCombat,route,stateId,incomingDamage} from './game.mjs';
 
 export const PROTOCOL=4;
+export const CORE_VERSION=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8')).version;
 
 export function envelope(state){
   const options=actions(state),incoming=inCombat(state)?incomingDamage(state):null;
   const attackGap=incoming===null?null:Math.max(0,incoming-(state.player?.block??0));
-  return {state_id:stateId(state),route:route(state,options),options,state,
+  return {implementation:{core_version:CORE_VERSION,protocol:PROTOCOL},state_id:stateId(state),route:route(state,options),options,state,
     tactical_facts:inCombat(state)?{displayed_attack_damage:incoming,block_needed_for_displayed_attacks:attackGap,
       note:'Current displayed attacks only; excludes future card effects and end-turn triggers.'}:undefined};
 }
@@ -20,7 +22,7 @@ export async function withLock(dir,fn){
   try{return await fn();}finally{await rm(lock,{recursive:true});}
 }
 
-export function recorder(dir){return async data=>{await mkdir(dir,{recursive:true});await appendFile(join(dir,'events.jsonl'),JSON.stringify({at:new Date().toISOString(),protocol:PROTOCOL,...data})+'\n');};}
+export function recorder(dir){return async data=>{await mkdir(dir,{recursive:true});await appendFile(join(dir,'events.jsonl'),JSON.stringify({at:new Date().toISOString(),protocol:PROTOCOL,core_version:CORE_VERSION,...data})+'\n');};}
 
 async function persistHalt(control,payload){
   await writeFile(join(control,'HALTED'),JSON.stringify(payload));
@@ -31,8 +33,8 @@ export async function assertClear(control){
   catch(e){if(e.code!=='ENOENT')throw e;}
 }
 
-export async function dispatch(game,option,{control,record,source='planner',expectedId,observe}={}){
-  await record({event:'dispatch',source,state_id:expectedId,option});
+export async function dispatch(game,option,{control,record,source='planner',expectedId,observe,before,event='dispatch',details={}}={}){
+  await record({...details,event,source,state_id:expectedId,option,before});
   await writeFile(join(control,'HALTED'),JSON.stringify({reason:'in_flight',expectedId,option}),{flag:'wx'});
   const start=performance.now();
   let receipt;
@@ -65,9 +67,9 @@ export async function execute(game,expectedId,optionId,{dir,control=dir,record=r
   if(stateId(before)!==expectedId)throw Error('Stale state: refresh before choosing an action');
   const option=actions(before).find(o=>o.id===String(optionId));
   if(!option)throw Error('Action not advertised by this state');
-  const result=await dispatch(game,option,{control,record,source,expectedId,observe:async({receipt})=>{
+  const result=await dispatch(game,option,{control,record,source,expectedId,before,observe:async({receipt,started})=>{
     const after=await game.settled(expectedId);
-    await record({event:'verified',source,option,receipt,after});
+    await record({event:'verified',source,option,receipt,after,action_ms:Math.round(performance.now()-started)});
     return {ok:true,after};
   }});
   return {action_ms:result.action_ms,...envelope(result.after)};

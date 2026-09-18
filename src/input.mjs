@@ -7,7 +7,7 @@
 // numbers the program already computed, plus the exact condition the program
 // wants judged.
 import {describeCard,unknownCards} from './effects.mjs';
-import {incomingAttacks,optionBlock,optionDamage,optionTarget} from './combat.mjs';
+import {incomingAttacks,projectPlay,optionTarget} from './combat.mjs';
 
 const enemyView=enemy=>({
   id:enemy.entity_id,
@@ -17,7 +17,7 @@ const enemyView=enemy=>({
   block:enemy.block??0,
   incoming:incomingAttacks({battle:{enemies:[enemy]}}).total,
   intents:(enemy.intents??[]).map(intent=>({type:intent.type,title:intent.title,value:intent.label})),
-  statuses:(enemy.status??[]).map(status=>`${status.name} ${status.amount}`),
+  statuses:(enemy.status??[]).map(({id,name,amount,description})=>({id,name,amount,description})),
   keywords:(enemy.keywords??[]).map(keyword=>keyword.name)
 });
 
@@ -30,10 +30,11 @@ export function optionView(option,state,store={}){
   if(command.action==='play_card'){
     const card=(state.player?.hand??[]).find(entry=>entry.index===command.card_index);
     view.card=card?describeCard(card,store):{id:'UNKNOWN',known:false,index:command.card_index};
-    const damage=optionDamage(option);
-    const block=optionBlock(option);
-    if(damage!==null)view.computed={damage};
-    if(block)view.computed={...(view.computed??{}),block};
+    const projected=projectPlay(state,option);
+    if(projected.known)view.computed={damage:projected.effect.total??0,
+      block:projected.effect.block??0,energy:projected.effect.cost,kills:projected.kills,
+      survives_displayed_attack:projected.survives,verified:true};
+    else view.outcome={verified:false,reason:projected.reason};
     if(target)view.targets={id:target.entity_id,name:target.name,hp:target.hp,block:target.block??0};
   }
   return view;
@@ -72,8 +73,8 @@ export function buildInput(state,options,{store={},policy=null}={}){
       },
       hand,
       enemies:(state.battle?.enemies??[]).filter(enemy=>enemy.hp>0).map(enemyView),
-      player_statuses:(player.status??[]).map(status=>`${status.name} ${status.amount}`),
-      relics:(player.relics??[]).map(relic=>relic.name),
+      player_statuses:(player.status??[]).map(({id,name,amount,description})=>({id,name,amount,description})),
+      relics:(player.relics??[]).map(({id,name,description,counter})=>({id,name,description,counter})),
       potions:(player.potions??[]).map(potion=>({name:potion.name,usable:potion.can_use_in_combat===true,effect:potion.description}))
     },
     options:options.map(option=>optionView(option,state,store)),

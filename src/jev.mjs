@@ -15,8 +15,8 @@ function fail(message,requests,usage={unavailable:true}){
 
 export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,fetcher=fetch,signal,
   shortlist=null,effects={},providedInput=null,candidates=null,strategy=null}={}){
-  if(!apiKey)throw Error('TYPESAFE_API_KEY is missing');
-  if(!options.length)throw Error('No options offered; the caller must not ask for a choice');
+  if(!apiKey)fail('TYPESAFE_API_KEY is missing',0);
+  if(!options.length)fail('No options offered; the caller must not ask for a choice',0);
   const input=providedInput??buildInput(state,options,{store:effects,policy:strategy??null});
   if(candidates?.length)input.candidates=candidates;
   if(shortlist)input.program_notes=shortlist.reason??null;
@@ -43,7 +43,8 @@ export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,
     fail(error.message||'Jev request failed',requests);
   }
   if(!res.ok)fail(`Jev returned HTTP ${res.status}; no action sent`,requests);
-  const result=await res.json();
+  let result;
+  try{result=await res.json();}catch(error){fail(error.message||'Invalid Jev JSON',requests);}
   const usage=result.usage&&Number.isFinite(Number(result.usage.input_tokens))
     ?{input_tokens:Number(result.usage.input_tokens??0),output_tokens:Number(result.usage.output_tokens??0)}
     :{unavailable:true};

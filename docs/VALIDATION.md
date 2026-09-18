@@ -1,3 +1,9 @@
+# Validation
+
+## 0.2.0 / protocol 4 acceptance
+
+This refactor has offline controller/adapter/transaction regression evidence. Historical gameplay below belongs to earlier implementations and is not evidence of new-version speed or win rate. Fresh live gameplay has not been resumed during this refactor. The state envelope reports the installed core version and protocol.
+
 # 验证记录
 
 此文件区分实际游戏、离线测试与尚未验证的能力。正在进行的整局试玩不会提前记为通过。
@@ -16,7 +22,7 @@
 
 - 已知效果与未知效果共用一套战斗算术：格挡先于生命；8 HP + 3 格挡不会被 6 点伤害算成斩杀。
 - 单步动作与多卡前缀走同一套已验证发送：两卡候选为一次模型请求、两次核对后的发送；预测偏离会拦住第二次发送并保持停止。
-- 成功发送后可见状态不变视为未知结果：停止标记保留，不能重发。只有游戏明确拒绝的回执才视为无效果。
+- 成功发送后可见状态不变视为未知结果：停止标记保留，不能重发。任何发送错误都不能仅凭错误文字证明无副作用；发送后异常保留停止。
 - 未匹配的策略不会在仍有可打牌时默认结束回合；缺少 run identity 或未知失效条件时策略不生效。
 - 升级牌的英文效果用当前牌面数值，不再沿用种子里的固定 6 点。
 - 上述均有离线回归。真实对局兼容由后续有界运行时检查证明；离线通过不等于实战通过。

@@ -25,9 +25,9 @@ test('one turn with a plan, a Jev call and an agent gap',()=>{
     verified(1000,{action_ms:900}),
     decision(2500,{inference_ms:300}),
     dispatch(3000),
-    verified(3500,{action_ms:700}),
+    verified(3700,{action_ms:700}),
     dispatch(5000,{source:'deterministic',command:{action:'end_turn'},label:'End turn'}),
-    verified(5600,{action_ms:1000,round:2}),
+    verified(6000,{action_ms:1000,round:2}),
   ];
   const [turn]=analyzeTurns(rows).turns;
   assert.equal(turn.turn,'1:10:1');
@@ -40,9 +40,9 @@ test('one turn with a plan, a Jev call and an agent gap',()=>{
   assert.equal(turn.input_tokens,1000);
   assert.equal(turn.output_tokens,20);
   assert.equal(turn.action_ms,900+700+1000);
-  // settles at 1900, 4200 and 6600; dispatches at 3000 and 5000
-  assert.equal(turn.agent_gap_ms,1100+800);
-  assert.equal(turn.turn_ms,6600);
+  // Verified timestamps already follow settlement: 1000, 3700 and 6000.
+  assert.equal(turn.agent_gap_ms,2000+1300);
+  assert.equal(turn.turn_ms,6000);
   assert.equal(turn.complete,true);
   assert.equal(turn.stop,false);
 });
@@ -63,7 +63,7 @@ test('a mid-turn stop is attached to the turn that was interrupted',()=>{
   assert.deepEqual(turns[0].interruptions,['plan_deviation']);
   assert.equal(turns[0].stop,true);
   assert.equal(turns[0].agent_gap_ms,0);
-  assert.equal(turns[0].tail_gap_ms,2300);
+  assert.equal(turns[0].tail_gap_ms,3100);
   assert.deepEqual([...stops], [['plan_deviation',1]]);
 });
 

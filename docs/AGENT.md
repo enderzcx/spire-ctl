@@ -26,13 +26,14 @@ A `battle` run returns for the planner in three distinguishable cases:
 - `low_confidence` - the fast model could not settle the state and the program has
   no verified move of its own. This is the first time this exact state is handed
   over.
-- `repeated_state` - the same state was already handed over before. Do not answer
+- `repeated_state` - the same state with the same semantic strategy was already handed over before. Do not answer
   it with another sample; the packet needs a decision or a strategy.
 - `Potential lethal incoming damage` / `Lethal N damage cannot be blocked` - the
   program's arithmetic says this turn loses. This is a real planner decision.
 
-A takeover may write `.runtime/strategy.json` so the loop can continue without a
-round trip per card. The contract is explicit and checked on every step:
+For the current bridge, provide a strategy to a single `battle` call, bound to
+its freshly read `expected_state_id`. Do not write a persistent strategy file
+when the bridge has no run identity. Conditions are checked on every step:
 
 ```json
 {
@@ -68,9 +69,9 @@ the turn or picking a card.
 Two more decision shapes exist besides a single fast-model choice:
 
 - `node bin/spire.mjs advance [MAX_STEPS]` performs only mechanical steps - claim
-  free rewards, advance dialogue, click a fixed button, walk the new-run menu -
-  and stops at the first screen that needs a decision. Gold, potion and chest
-  claims are mechanical; a card reward, a route, a shop purchase, a rest-site
+  gold/potions with room, advance unambiguous dialogue, or click a fixed exit -
+  and stops at the first screen that needs a decision. Gold and available-slot potion
+  claims are mechanical; accepting a relic or starting a run is a decision; a card reward, a route, a shop purchase, a rest-site
   choice and an event trade are decisions and are never taken by this command.
 - A battle turn offers every legal single action (including end turn) plus a
   small number of proven two-card prefixes when the remaining step budget allows.
@@ -79,8 +80,7 @@ Two more decision shapes exist besides a single fast-model choice:
   program computed. One request picks a line. A two-card line is one request
   and two sequential verified sends through the same executor as `plan`. Survival
   is a hard constraint the model cannot override. Unbounded, random, draw and
-  status-modifying later effects are not a deterministic prefix. Set
-  `SPIRE_CANDIDATES=0` to force single-action questions.
+  status-modifying later effects are not a deterministic prefix. All meaningful single choices remain available beside prefixes.
 
 The fast model's input is a filtered English projection (`src/input.mjs`): stable
 card ids with checked effects, the program's computed totals, the enemies'
@@ -108,3 +108,7 @@ node --env-file=.env scripts/dsh.mjs \
 ```
 
 Harness permission settings are separate from CLI game guards. A textual strategy suggestion is not proof of tool execution. Require CLI event logs plus game-state changes to certify an integration. For deterministic multi-card prefixes, see ROUND-PLAN.md and use `plan` rather than one model call per card.
+
+### In-call strategy example
+
+Write a local JSON packet containing `expected_state_id` copied from the latest state and a `strategy` object as above; run `node bin/spire.mjs battle 60 PACKET.json`. With native DSH tools, pass those same two fields to `spire_battle`. A strategy constrains Jev; it does not replace Jev with a label-matching executor. It expires at the end of that invocation. Changing the actual policy permits a fresh judgment; renaming it does not.

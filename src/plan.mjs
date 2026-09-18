@@ -30,7 +30,7 @@ export function validatePlan(plan,initial) {
   }
 }
 
-export async function runPlan(game,plan,{dir,control=dir,record=recorder(dir),timeout=8000}={}) {
+export async function runPlan(game,plan,{dir,control=dir,record=recorder(dir),timeout=8000,source='planner'}={}) {
   await assertClear(control);
   let state=await game.read();validatePlan(plan,state);
   const original=state.player.hand.map(c=>({...c,original_index:c.index}));
@@ -49,8 +49,7 @@ export async function runPlan(game,plan,{dir,control=dir,record=recorder(dir),ti
     const nextHand=predicted.hand.filter((_,i)=>i!==index);
     const expected={...predicted,hand:nextHand,discard:predicted.discard+1,...step.expect};
     if(expected.hand.length!==nextHand.length||expected.hand.some((c,i)=>c.id!==nextHand[i].id))throw Error('Plan may not draw, generate, reorder or replace cards');
-    await record({event:'plan_dispatch',step:n,option,before:live,expected});
-    const result=await dispatch(game,option,{control,record,source:'plan',expectedId:stateId(live),observe:async({receipt})=>{
+    const result=await dispatch(game,option,{control,record,source,expectedId:stateId(live),before:live,event:'plan_dispatch',details:{step:n,expected},observe:async({receipt})=>{
       const deadline=Date.now()+timeout;let last,matches=0;
       while(Date.now()<deadline){
         last=await game.read();
@@ -65,14 +64,14 @@ export async function runPlan(game,plan,{dir,control=dir,record=recorder(dir),ti
     }});
     dispatched+=1;
     if(result.boundary){
-      await record({event:'plan_boundary',step:n,receipt:result.receipt,state:result.after});
+      await record({event:'plan_boundary',source,step:n,receipt:result.receipt,state:result.after,action_ms:result.action_ms,confirmed:result.after.state_type==='rewards'});
       const done=result.after.state_type==='rewards'?n+1:n;
       return {reason:'combat_or_selection_boundary',completed:done,dispatched,confirmed:result.after.state_type==='rewards'?confirmed+1:confirmed,...envelope(result.after)};
     }
     if(!result.ok)
       return {reason:'plan_deviation_no_replay',completed:n+1,dispatched,confirmed,...envelope(result.after??live)};
     confirmed+=1;
-    await record({event:'plan_verified',step:n,option,after:result.after,action_ms:result.action_ms});
+    await record({event:'plan_verified',source,step:n,option,after:result.after,action_ms:result.action_ms});
     remaining.splice(index,1);predicted=projection(result.after);state=result.after;
   }
   return {reason:'plan_complete',completed:plan.steps.length,dispatched,confirmed,...envelope(state)};

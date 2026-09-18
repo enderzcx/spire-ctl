@@ -27,10 +27,10 @@ test('a potion reward with a full belt needs a decision',()=>{
   assert.match(verdict.reason,/belt is full/);
 });
 
-test('a chest relic is mechanical but an event trade is not',()=>{
+test('a chest relic and an event trade both require decisions',()=>{
   const chest={state_type:'treasure',run:{act:1,floor:1},player:{hp:70,potions:[],max_potion_slots:3},
     treasure:{relics:[{index:0,name:'Orichalcum'}],can_proceed:false}};
-  assert.equal(mechanicalPlan(chest,[option('claim_treasure_relic',{index:0})]).steps,1);
+  assert.equal(mechanicalPlan(chest,[option('claim_treasure_relic',{index:0})]),null);
   const event={state_type:'event',run:{act:1,floor:9},player:{hp:56,max_hp:80,potions:[],max_potion_slots:3},
     event:{in_dialogue:false,options:[{index:0,title:'eat'},{index:1,title:'search'}]}};
   const verdict=isMechanical(event,[option('choose_event_option',{index:0}),option('choose_event_option',{index:1})]);
@@ -49,4 +49,9 @@ test('dialogue and menu plumbing are mechanical',()=>{
   assert.equal(mechanicalPlan(dialogue,[option('advance_dialogue')]).steps,1);
   const menu={state_type:'menu',menu_screen:'main',options:['continue']};
   assert.equal(mechanicalPlan(menu,[{id:'0',command:{action:'menu_select',option:'continue'},label:'Continue'}]).steps,1);
+});
+
+test('mechanical advance cannot embark into a new run or pick a dialogue option',()=>{
+  assert.equal(mechanicalPlan({state_type:'menu'},[{id:'0',command:{action:'menu_select',option:'embark'}}]),null);
+  assert.equal(mechanicalPlan({state_type:'event',event:{in_dialogue:true}},[option('advance_dialogue'),option('choose_event_option',{index:0})]),null);
 });

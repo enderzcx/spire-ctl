@@ -115,10 +115,10 @@ export function incomingDamage(s){return combatIncoming(s);}
 export function route(s,options=actions(s)) {
   if(!inCombat(s))return {kind:'planner',strategic:true,reason:`${s.state_type}: progression/build decision`};
   if(!s.battle.ready_for_action)return {kind:'wait',reason:'Game busy'};
-  if(s.player.hp<=Math.max(15,s.player.max_hp*.3))return {kind:'planner',strategic:false,
-    guard:'low_hp',reason:'Low HP: reassess survival and potions'};
   const incoming=incomingDamage(s);
   if(incoming===null)return {kind:'planner',strategic:true,reason:'Unrecognized attack intent'};
+  if(s.player.hp<=Math.max(15,s.player.max_hp*.3))return {kind:'planner',strategic:false,
+    guard:'low_hp',reason:'Low HP: reassess survival and potions'};
   if(incoming-s.player.block>=s.player.hp)return {kind:'planner',strategic:false,
     guard:'lethal_incoming',reason:'Potential lethal incoming damage'};
   const cards=options.filter(o=>o.command.action==='play_card');

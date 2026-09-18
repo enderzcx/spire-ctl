@@ -6,10 +6,10 @@
 //
 // A screen is mechanical only when every advertised action is one of:
 //   - claim_reward for gold or a potion,
-//   - claim_treasure_relic when the belt/relic set has room,
+//   - leaving an empty treasure screen,
 //   - proceed / advance_dialogue,
 //   - confirm_selection for an already-selected, owner-approved pick,
-//   - a menu `continue` or the new-run confirm chain,
+//   - a sole menu `continue` (never start a new run),
 //   - end_turn while a strategy is in force (handled by the battle loop).
 // Anything else - map routing, card rewards, relic picks, shop purchases, event
 // options, rest-site choices, potion use - is a decision.
@@ -31,9 +31,9 @@ function potionBeltHasRoom(state){
 }
 
 function relicClaimIsMechanical(state){
-  // A relic in a chest is free; a relic that costs a card or gold is not, and
-  // an event that trades health for a relic is definitely not mechanical.
-  return state.state_type==='treasure';
+  // Free does not mean consequence-free: accepting or declining a relic is
+  // a strategic choice. Only leave a chest after all such choices are resolved.
+  return state.state_type==='treasure'&&(state.treasure?.relics??[]).length===0;
 }
 
 export function isMechanical(state,options){
@@ -52,14 +52,14 @@ export function isMechanical(state,options){
   }
   if(state.state_type==='treasure'){
     return relicClaimIsMechanical(state)
-      ?{mechanical:true,reason:'a chest relic is free'}
-      :{mechanical:false,reason:'treasure needs a decision'};
+      ?{mechanical:true,reason:'empty treasure exit'}
+      :{mechanical:false,reason:'relic effects require a decision'};
   }
-  if(state.state_type==='event'&&state.event?.in_dialogue)
+  if(state.state_type==='event'&&state.event?.in_dialogue&&options.every(o=>o.command.action==='advance_dialogue'))
     return {mechanical:true,reason:'advance dialogue only'};
   if(state.state_type==='menu'){
     const actions=options.map(option=>option.command.option);
-    if(actions.every(option=>['continue','confirm','embark','standard','back'].includes(option)))
+    if(actions.every(option=>['continue'].includes(option)))
       return {mechanical:true,reason:'menu plumbing'};
     return {mechanical:false,reason:'menu choice'};
   }
