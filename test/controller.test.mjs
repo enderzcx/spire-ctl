@@ -180,3 +180,12 @@ test('an unverifiable failure still halts and refuses the next action',()=>tempo
     await assert.rejects(execute({...game,settled:async()=>x},stateId(x),'0',{dir,control}),/outcome unknown/);
   }finally{await rm(control,{recursive:true,force:true});}
 }));
+
+test('an action records who decided it, so agent moves are not counted as takeovers',()=>temporary(async dir=>{
+  const x=s();
+  const game={read:async()=>x,settled:async()=>x,send:async()=>({status:'ok'})};
+  await execute(game,stateId(x),'0',{dir,source:'agent'});
+  const rows=(await readFile(join(dir,'events.jsonl'),'utf8')).trim().split('\n').map(l=>JSON.parse(l));
+  assert.equal(rows.find(row=>row.event==='dispatch').source,'agent');
+  assert.equal(rows.find(row=>row.event==='verified').source,'agent');
+}));

@@ -24,7 +24,7 @@ export function createController({endpoint=process.env.SPIRE_API_URL??'http://12
   }
   return {
     async state({signal}={}){signal?.throwIfAborted();const s=await game(signal).read();return {...envelope(s),planning_state:projection(s)};},
-    act:(expected,id,{signal}={})=>mutate(signal,(g,opts)=>execute(g,expected,id,opts)),
+    act:(expected,id,{signal,source='caller'}={})=>mutate(signal,(g,opts)=>execute(g,expected,id,{...opts,source})),
     // The fast-model seam is injectable so the shortlist hand-off can be tested
     // without a provider; production keeps the real adapter.
     battle:(max=60,{signal}={})=>mutate(signal,(g,opts)=>battle(g,(s,o,shortlist,extra={})=>decide(s,o,{apiKey,signal,shortlist,...extra}),{...opts,max})),

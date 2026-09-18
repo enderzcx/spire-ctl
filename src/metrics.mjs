@@ -263,7 +263,15 @@ export function turnMetrics(rows,batch=3){
   const summaries=runs.map((runRows,position)=>{
     const {turns,stops,takeovers,calls,usage}=analyzeTurns(runRows);
     const last=turns.at(-1);
-    const protocol=runRows.find(row=>isObject(row)&&row.protocol!==undefined)?.protocol??'unversioned';
+    // The dominant protocol of the rows in this batch, so a window label never
+    // depends on which row happened to come first.
+    const counts=new Map();
+    for(const row of runRows){
+      if(!isObject(row))continue;
+      const key=row.protocol??'unversioned';
+      counts.set(key,(counts.get(key)??0)+1);
+    }
+    const protocol=[...counts.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0]??'unversioned';
     return {batch:position+1,protocol,turns,
       summary:{turns_total:turns.length,turns_complete:turns.filter(t=>t.complete).length,
         jev_calls_within_turns:turns.reduce((total,t)=>total+t.model_calls,0),

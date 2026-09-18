@@ -131,7 +131,8 @@ export function route(s,options=actions(s)) {
     guard:'lethal_incoming',reason:'Potential lethal incoming damage'};
   const cards=options.filter(o=>o.command.action==='play_card');
   if(!cards.length) {
-    if(options.some(o=>o.command.action==='use_potion') && incoming-s.player.block>=Math.max(8,s.player.hp*.25))return {kind:'planner',reason:'Assess potion before significant damage'};
+    if(options.some(o=>o.command.action==='use_potion') && incoming-s.player.block>=Math.max(8,s.player.hp*.25))
+      return {kind:'planner',strategic:false,guard:'potion_review',reason:'Assess potion before significant damage'};
     return {kind:'deterministic',reason:'No playable cards; no urgent potion decision',option:options.find(o=>o.command.action==='end_turn')};
   }
   return {kind:'jev',reason:'Ready combat: choose among legal card actions'};

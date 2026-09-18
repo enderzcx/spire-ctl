@@ -6,7 +6,8 @@ async function main(){
   if(command==='state')return controller.state();
   if(command==='act'){
     if(args.length!==2)throw Error('Usage: act STATE_ID OPTION_ID (from state)');
-    return controller.act(args[0],args[1]);
+    // The label says who decided; the CLI itself is the calling agent.
+    return controller.act(args[0],args[1],{source:process.env.SPIRE_ACT_SOURCE??'caller'});
   }
   if(command==='plan'){
     if(args.length!==1)throw Error('Usage: plan PLAN.json');

@@ -4,7 +4,7 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {strategyApplies,strategyPreference,loadStrategy,saveStrategy,clearStrategy,
-  noteHandoff,seenHandoff,clearHandoffs} from '../src/strategy.mjs';
+  noteHandoff,seenHandoff,clearHandoffs,guardSignature,noteGuard,clearGuards} from '../src/strategy.mjs';
 
 const combat=(overrides={})=>({state_type:'monster',run:{act:1,floor:9,...overrides.run},
   player:{hp:40,max_hp:80,block:0,energy:3,...overrides.player},
@@ -164,4 +164,18 @@ test('a strategy from a previous run is discarded instead of steering a new one'
   // A new run starts at floor 1, so the old strategy is dropped and removed.
   assert.equal(await loadStrategy(dir,{run:{act:1,floor:1}}),null);
   assert.equal(await loadStrategy(dir),null,'the file was cleared, not just ignored');
+}));
+
+test('a repeated guard state stops interrupting, but a real change reports again',()=>temp(async dir=>{
+  const low=combat({player:{hp:22},enemies:[{entity_id:'E_0',hp:31,intents:[{label:'8'}]}]});
+  const signature=guardSignature(low);
+  assert.equal((await noteGuard(dir,'low_hp',signature)).repeated,false,'first time reports');
+  assert.equal((await noteGuard(dir,'low_hp',signature)).repeated,true,'same band and enemies stays quiet');
+  // Health dropping into another band is a real change.
+  const worse=combat({player:{hp:14},enemies:[{entity_id:'E_0',hp:31,intents:[{label:'8'}]}]});
+  assert.equal((await noteGuard(dir,'low_hp',guardSignature(worse))).repeated,false);
+  // A new enemy in the same band is also a real change.
+  const more=combat({player:{hp:22},enemies:[{entity_id:'E_0',hp:31,intents:[{label:'8'}]},{entity_id:'E_1',hp:20,intents:[{label:'6'}]}]});
+  assert.equal((await noteGuard(dir,'low_hp',guardSignature(more))).repeated,false);
+  await clearGuards(dir);
 }));

@@ -120,3 +120,31 @@ export async function seenHandoff(dir,stateId){
 export async function clearHandoffs(dir){
   await rm(journalFile(dir),{force:true});
 }
+
+// A risk guard must not become a per-card interruption. The same guard state -
+// the same health band and the same living enemies - is therefore reported only
+// once, and any real change (health dropping further, a new enemy) reports
+// again. The guard itself is never removed; it simply stops repeating itself.
+const guardFile=dir=>join(dir,'guard-state.json');
+
+const bandOf=hp=>Math.floor(Number(hp)/5);
+
+export function guardSignature(state){
+  const enemies=(state.battle?.enemies??[]).filter(enemy=>enemy.hp>0)
+    .map(enemy=>enemy.entity_id).sort().join(',');
+  return `${bandOf(state.player?.hp??0)}|${state.run?.act??'?'}:${state.run?.floor??'?'}|${enemies}`;
+}
+
+export async function noteGuard(dir,guard,signature){
+  await mkdir(dir,{recursive:true});
+  let store={};
+  try{store=JSON.parse(await readFile(guardFile(dir),'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
+  const seen=store[guard]===signature;
+  store[guard]=signature;
+  await writeFile(guardFile(dir),JSON.stringify(store,null,2));
+  return {repeated:seen};
+}
+
+export async function clearGuards(dir){
+  await rm(guardFile(dir),{force:true});
+}

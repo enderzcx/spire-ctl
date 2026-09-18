@@ -2,7 +2,7 @@ import {mkdir,readFile,writeFile,appendFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {actions,inCombat,route,stateId,incomingDamage} from './game.mjs';
 import {localPolicy,nextLocalPlay,verifyStableProposal} from './policy.mjs';
-import {loadStrategy,strategyApplies,strategyPreference,seenHandoff,noteHandoff} from './strategy.mjs';
+import {loadStrategy,strategyApplies,strategyPreference,seenHandoff,noteHandoff,guardSignature,noteGuard} from './strategy.mjs';
 import {mechanicalPlan} from './mechanical.mjs';
 import {planCandidates} from './planning.mjs';
 
@@ -28,6 +28,9 @@ export function recorder(dir){return async data=>{await mkdir(dir,{recursive:tru
 // `control` holds the shared halt and lock material; it is the bridge's state
 // directory in production and may be pointed elsewhere by tests so one case
 // cannot leak a halt into the next.
+// `source` records who decided the action. A program-driven progression choice
+// (map, reward, event) is labelled by its caller, so a metrics window can tell
+// "the agent chose this" apart from "the planner was handed a decision".
 export async function execute(game,expectedId,optionId,{dir,control=dir,record=recorder(dir),source='planner'}={}){
   try{await readFile(join(control,'HALTED'));throw Error('Previous action outcome unknown: inspect game and clear the halt explicitly');}catch(e){if(e.code!=='ENOENT')throw e;}
   const before=await game.read();
@@ -76,9 +79,30 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
     // A guard (low HP, lethal-incoming threshold) is the program's own
     // threshold, not a new decision, so an agreed strategy may carry the loop
     // through it. A strategic route always returns to the caller.
-    const carried=agreed&&env.route.kind==='planner'&&env.route.strategic===false
-      &&strategyApplies(agreed,s).ok?strategyPreference(agreed,env.options):null;
-    if(env.route.kind==='planner'&&!carried)return {reason:env.route.reason,steps,...env};
+    const guardKind=env.route.kind==='planner'&&env.route.strategic===false?env.route.guard:null;
+    const carried=agreed&&guardKind&&strategyApplies(agreed,s).ok?strategyPreference(agreed,env.options):null;
+    if(env.route.kind==='planner'&&!carried){
+      // A repeated guard state does not interrupt again: the same health band and
+      // the same enemies were already reported, so the loop keeps its own counsel
+      // until something actually changes.
+      if(guardKind){
+        const signature=guardSignature(s);
+        const {repeated}=await noteGuard(dir,guardKind,signature);
+        if(repeated){
+          await record({event:'guard_repeat',source:'program',guard:guardKind,
+            signature,state_type:s.state_type});
+          // The same guard state was already reported. The program still has no
+          // verified move of its own, so it hands over explicitly and says what
+          // would unblock the loop instead of guessing or stalling silently.
+          return {reason:`${env.route.reason} (already reported)`,steps,...env,guard:guardKind,
+            guard_repeated:true,
+            instruction:'This guard state was already reported; return a decision or a strategy with explicit conditions and expiry so the loop can continue'};
+        }
+        return {reason:env.route.reason,steps,...env,guard:guardKind,
+          instruction:'Return a decision, or a strategy with explicit conditions and expiry'};
+      }
+      return {reason:env.route.reason,steps,...env};
+    }
     if(env.route.kind==='wait')throw Error('Unexpected busy state');
     if(tokens>=100000)return {reason:'token_budget',steps,...env};
     const start=performance.now();let option=env.route.option,source='deterministic',local=null;
