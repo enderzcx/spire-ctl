@@ -243,6 +243,36 @@ const unbounded=/随机|加入.*手牌|加入.*抽牌堆|消耗|失去.*生命/;
 
 // A single-action continuation that is NOT a tactical choice. Only two shapes
 // qualify, because anything else ("hit the biggest number", "block instead of
+// An attrition check: the enemy is out-scaling what this hand can answer.
+//
+// The program owns arithmetic, and one thing arithmetic can see is a fight that
+// cannot be won from here: the displayed attack is larger than anything the hand
+// can block, and the position is already critical. Reporting that is not a win
+// condition - it is a reason to stop grinding and let the planner decide
+// (potions, a different line, or accepting the loss). It never overrides a
+// lethal line or a full cover.
+export function attritionRisk(state,options){
+  const attacks=incomingAttacks(state);
+  if(!attacks.known||!attacks.total)return null;
+  const hp=Number(state.player?.hp??0),block=Number(state.player?.block??0);
+  const gap=Math.max(0,attacks.total-block);
+  if(gap<=0)return null;
+  const living=enemiesOf(state);
+  if(!living.length)return null;
+  // The best this hand can cover by blocking, and whether it can remove an
+  // attacker instead (either answer means the position is still playable).
+  const cover=playable(options).reduce((best,option)=>Math.max(best,optionBlock(option)),0);
+  if([...lethalOptions(state,options).keys()].length)return null;
+  if(cover>=gap)return null;
+  // Uncovered, and this turn already empties the health bar: two such turns end
+  // the run, so grinding teaches nothing.
+  const lethalIn=Math.ceil(hp/Math.max(1,gap-cover));
+  if(lethalIn>1)return null;
+  return {kind:'attrition',
+    reason:`Displayed ${attacks.total} damage exceeds the ${cover} this hand can cover at ${hp} HP`,
+    evidence:{incoming:attacks.total,block,hand_cover:cover,gap,hp,lethal_in_turns:lethalIn}};
+}
+
 // attack") is a tactical preference and belongs to the fast model:
 //   - the one and only playable card, so there is no alternative to weigh,
 //   - a play that removes the last living enemy this turn.

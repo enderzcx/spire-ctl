@@ -1,7 +1,7 @@
 import {mkdir,readFile,writeFile,appendFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {actions,inCombat,route,stateId,incomingDamage} from './game.mjs';
-import {localPolicy,nextLocalPlay,verifyStableProposal} from './policy.mjs';
+import {localPolicy,nextLocalPlay,verifyStableProposal,attritionRisk} from './policy.mjs';
 import {loadStrategy,strategyApplies,strategyPreference,seenHandoff,noteHandoff,guardSignature,noteGuard} from './strategy.mjs';
 import {mechanicalPlan} from './mechanical.mjs';
 import {planCandidates} from './planning.mjs';
@@ -119,6 +119,11 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
       // decision, not a fast-model guess.
       const decision=policy?policy(s,env.options):null;
       if(decision?.kind==='escalate')return {reason:decision.reason,steps,...env,local_evidence:decision.evidence};
+      // A fight the arithmetic says cannot be answered: stop grinding and say so.
+      // Potions and a different line are planner decisions, not program guesses.
+      const attrition=policy?attritionRisk(s,env.options):null;
+      if(attrition)return {reason:attrition.reason,steps,...env,attrition:attrition.evidence,
+        instruction:'The displayed attack out-scales this hand; consider a potion, a different line, or accept the loss'};
       // `kill` proposes an ordered line, `play`/`guard` a single action, and
       // `resolve` continues a turn the program is already running. All of them
       // are program-settled, so no model call is needed for them.

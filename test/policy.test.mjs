@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {incomingAttacks,incomingDamage,localPolicy,nextLocalPlay,optionBlock,optionDamage,prefixPlan,intentDamage,verifyStableProposal} from '../src/policy.mjs';
+import {incomingAttacks,incomingDamage,localPolicy,nextLocalPlay,optionBlock,optionDamage,prefixPlan,intentDamage,verifyStableProposal,attritionRisk} from '../src/policy.mjs';
 
 const enemy=(overrides={})=>({entity_id:'E_0',combat_id:1,name:'Enemy',hp:20,max_hp:20,block:0,
   intents:[{type:'Attack',label:'6',title:'攻势'}],status:[],...overrides});
@@ -200,4 +200,40 @@ test('needed damage is hp minus block, so a small hit is not a kill',()=>{
     battle:{enemies:[enemy({hp:6,block:4})]}});
   assert.equal(localPolicy(shielded(),[card(0,'打击: 造成6点伤害。'),endTurn]).kind,'kill');
   assert.notEqual(localPolicy(shielded(),[card(0,'戳刺: 造成1点伤害。'),endTurn]).kind,'kill');
+});
+
+test('a fight the hand cannot answer stops instead of grinding',()=>{
+  // 20 HP, 25 displayed damage, and the best block in hand is 5: this turn
+  // already empties the bar, so the program reports instead of looping.
+  const doomed=state({player:{hp:20,block:0,energy:3,hand:[{index:0,cost:'1'}]},
+    battle:{enemies:[enemy({hp:40,intents:[{type:'Attack',label:'25'}]})]}});
+  const options=[card(0,'防御: 获得5点格挡。'),endTurn];
+  const risk=attritionRisk(doomed,options);
+  assert.equal(risk.kind,'attrition');
+  assert.equal(risk.evidence.hand_cover,5);
+  assert.equal(risk.evidence.lethal_in_turns,1);
+  // A hand that can cover the attack is playable, so nothing is reported.
+  assert.equal(attritionRisk(doomed,[card(0,'岿然不动: 获得30点格挡。'),endTurn]),null);
+  // A lethal line removes the attacker, which is a different answer.
+  const killable=state({player:{hp:20,energy:3,hand:[{index:0,cost:'1'}]},
+    battle:{enemies:[enemy({hp:6,intents:[{type:'Attack',label:'25'}]})]}});
+  assert.equal(attritionRisk(killable,[card(0,'打击: 造成6点伤害。 -> E (6 HP)'),endTurn]),null);
+  // Survivable for more than one turn is still a fight, not a report.
+  const survivable=state({player:{hp:40,block:0,energy:3,hand:[{index:0,cost:'1'}]},
+    battle:{enemies:[enemy({hp:40,intents:[{type:'Attack',label:'18'}]})]}});
+  assert.equal(attritionRisk(survivable,[card(0,'防御: 获得5点格挡。'),endTurn]),null);
+  // Already fully blocked: nothing to report.
+  const safe=state({player:{hp:20,block:30,energy:3,hand:[{index:0,cost:'1'}]},
+    battle:{enemies:[enemy({hp:40,intents:[{type:'Attack',label:'25'}]})]}});
+  assert.equal(attritionRisk(safe,[card(0,'防御: 获得5点格挡。'),endTurn]),null);
+});
+
+test('the model input states how long the position lasts',async()=>{
+  const {buildInput}=await import('../src/input.mjs');
+  const s=state({player:{hp:20,block:0,energy:3,hand:[{index:0,cost:'1'}]},
+    battle:{enemies:[enemy({hp:40,intents:[{type:'Attack',label:'10'}]})]}});
+  const input=buildInput(s,[card(0,'防御: 获得5点格挡。'),endTurn]);
+  assert.equal(input.state.computed.turns_survivable,2,'20 HP against 10 survives two turns');
+  assert.equal(input.state.computed.incoming_attack_total,10);
+  assert.ok('best_hand_block' in input.state.computed);
 });

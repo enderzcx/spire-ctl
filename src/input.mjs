@@ -55,6 +55,18 @@ export function buildInput(state,options,{store={},policy=null}={}){
         energy:player.energy,max_energy:player.max_energy,
         incoming_attack_total:attacks.known?attacks.total:null,
         unblocked_after_current_block:attacks.known?Math.max(0,attacks.total-(player.block??0)):null,
+        // How many more turns this position lasts if nothing changes. A long
+        // fight is exactly when a regeneration or block potion matters, and the
+        // arithmetic belongs here rather than in the model's head.
+        turns_survivable:attacks.known&&attacks.total>0
+          ?Math.ceil((player.hp??0)/Math.max(1,attacks.total-(player.block??0)))
+          :null,
+        // What the hand can cover by blocking alone, so a potion that only adds
+        // block is not proposed when block is already sufficient.
+        best_hand_block:(player.hand??[]).reduce((best,card)=>{
+          const match=String(card.description??'').match(/(\d+)\s*点格挡/);
+          return match?Math.max(best,Number(match[1])):best;
+        },0),
         draw_pile:player.draw_pile_count,discard_pile:player.discard_pile_count,
         exhaust_pile:player.exhaust_pile_count
       },
