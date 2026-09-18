@@ -44,8 +44,10 @@ export async function execute(game,expectedId,optionId,{dir,control=dir,record=r
 export async function battle(game,decide,{dir,control=dir,max=60,record=recorder(dir),policy=localPolicy}={}){
   if(!Number.isInteger(max)||max<1||max>100)throw Error('max must be 1..100');
   let s=await game.settled(),tokens=0,steps=0;const room=JSON.stringify(s.run);
+  const openingStep=steps;
   for(;steps<max;steps++){
     const env=envelope(s);
+    const actedThisTurn=steps>openingStep;
     if(!inCombat(s)||JSON.stringify(s.run)!==room)return {reason:'left_combat',steps,...env};
     if(env.route.kind==='planner')return {reason:env.route.reason,steps,...env};
     if(env.route.kind==='wait')throw Error('Unexpected busy state');
@@ -70,6 +72,20 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
       if(!option&&decision?.kind==='decline'){
         const next=nextLocalPlay(s,env.options);
         if(next){option=next.option;source='local';local=next;}
+        else{
+          // Nothing locally playable and no model needed: the turn is safe to
+          // close, so pay no round trip for an action the rules already fix.
+          const close=env.options.find(o=>o.command.action==='end_turn');
+          const attacks=incomingDamage(s);
+          // Only close a turn the program is already running. The opening
+          // decision of a turn still reaches a model, so the shortcut never
+          // replaces strategy with silence.
+          if(close&&actedThisTurn&&attacks!==null&&attacks-s.player.block<s.player.hp){
+            option=close;source='local';
+            local={kind:'end_turn',reason:'No local play and no threat; close the turn',
+              evidence:{incoming:attacks,block:s.player.block,hp:s.player.hp}};
+          }
+        }
       }
       if(!option){
         const candidates=env.options.filter(o=>o.command.action!=='use_potion');
@@ -82,9 +98,10 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
           shortlist_reason:d.answer?.shortlist_reason??null,narrowed:d.answer?.narrowed??false});
         if(d.answer.confidence<.5){
           // The cutoff is unchanged. A low-confidence answer is only a handoff
-          // when the program has no fully-determined move of its own; a guard
-          // that covers the whole displayed attack is such a move.
-          const fallback=policy?guardOption(s,env.options):null;
+          // when the program has no fully-determined move of its own: a guard
+          // that covers the whole displayed attack, or a self-contained play
+          // the fast model is likely missing (it cannot see end-of-turn expiry).
+          const fallback=policy?guardOption(s,env.options)??nextLocalPlay(s,env.options):null;
           if(!fallback)return {reason:'low_confidence',proposal:d,steps,...env};
           option=fallback.option;source='local';local={...fallback,low_confidence:d.answer.confidence};
         }else{

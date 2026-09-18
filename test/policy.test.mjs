@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {incomingAttacks,incomingDamage,localPolicy,optionBlock,optionDamage,prefixPlan,intentDamage} from '../src/policy.mjs';
+import {incomingAttacks,incomingDamage,localPolicy,nextLocalPlay,optionBlock,optionDamage,prefixPlan,intentDamage} from '../src/policy.mjs';
 
 const enemy=(overrides={})=>({entity_id:'E_0',combat_id:1,name:'Enemy',hp:20,max_hp:20,block:0,
   intents:[{type:'Attack',label:'6',title:'攻势'}],status:[],...overrides});
@@ -130,4 +130,32 @@ test('guard arithmetic respects block already carried into the turn',()=>{
   const decision=localPolicy(s,[card(0,'防御: 获得5点格挡。'),endTurn]);
   assert.equal(decision.kind,'guard');
   assert.equal(decision.evidence.gap,2);
+});
+
+test('a hand of skills is played by the program instead of costing a round trip',()=>{
+  const s=state({player:{hp:60,block:0},battle:{enemies:[enemy({intents:[{type:'Attack',label:'12'}]})]}});
+  const options=[card(0,'耸肩无视: 获得8点格挡。 抽1张牌。'),card(1,'战斗专注: 抽3张牌。'),card(2,'晕眩: 不能被打出。'),endTurn];
+  const next=nextLocalPlay(s,options);
+  assert.equal(next.kind,'resolve');
+  assert.equal(next.option.command.card_index,0);
+  assert.match(next.reason,/8-block/);
+});
+
+test('a fill play never takes a card with a hidden cost',()=>{
+  const s=state({player:{hp:60,block:0},battle:{enemies:[enemy({intents:[{type:'Attack',label:'12'}]})]}});
+  const options=[card(0,'坚毅: 获得7点格挡。  随机消耗1张牌。'),card(1,'岿然不动: 获得30点格挡。 消耗。'),endTurn];
+  assert.equal(nextLocalPlay(s,options),null);
+});
+
+test('a fill play is skipped when the displayed attack is already lethal',()=>{
+  const s=state({player:{hp:10,block:0},battle:{enemies:[enemy({intents:[{type:'Attack',label:'30'}]})]}});
+  assert.equal(nextLocalPlay(s,[card(0,'耸肩无视: 获得8点格挡。 抽1张牌。'),endTurn]),null);
+});
+
+test('a known attack still outranks a self-contained skill',()=>{
+  const s=state({player:{hp:60,block:0},battle:{enemies:[enemy({hp:40,intents:[{type:'Attack',label:'12'}]})]}});
+  const options=[card(0,'耸肩无视: 获得8点格挡。 抽1张牌。'),card(1,'打击: 造成8点伤害。 -> Enemy (40 HP)'),endTurn];
+  const next=nextLocalPlay(s,options);
+  assert.equal(next.option.command.card_index,1);
+  assert.match(next.reason,/8-damage play/);
 });

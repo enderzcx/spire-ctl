@@ -72,7 +72,12 @@ test('second writer cannot take the game lock',()=>temporary(async dir=>{
   await withLock(dir,async()=>{});
 }));
 test('low confidence returns a planner packet without dispatch',()=>temporary(async dir=>{
-  let sent=0;const x=s(),game={settled:async()=>x,send:async()=>sent++};
+  // A real decision the program cannot settle: 20 HP of enemy remains, the only
+  // card deals 6, and 30 incoming damage cannot be fully blocked by that hand.
+  // No lethal line, no guard, nothing to close on: the planner gets the packet
+  // and nothing is dispatched.
+  let sent=0;const x=s();x.battle.enemies[0].hp=20;x.battle.enemies[0].intents[0].label='30';
+  const game={settled:async()=>x,send:async()=>sent++};
   const r=await battle(game,async()=>({option:actions(x)[0],answer:{confidence:.2},usage:{input_tokens:10}}),{dir});
   assert.equal(r.reason,'low_confidence');assert.equal(sent,0);
 }));

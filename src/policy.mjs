@@ -205,12 +205,33 @@ export function prefixPlan(state,options,limit=3){
 // played when the account is healthy, but never while a single mistake is fatal.
 const unbounded=/随机|加入.*手牌|加入.*抽牌堆|消耗|失去.*生命/;
 
+// A predictable, self-contained effect: a stated amount of block or draw.
+const fillBlock=/获得(\d+)点格挡/;
+const fillDraw=/抽(\d+)张牌/;
+
+function fillOptions(state,options){
+  const out=[];
+  for(const option of playable(options)){
+    const label=String(option.label??'');
+    if(optionDamage(option)!==null)continue;
+    if(unbounded.test(label))continue;
+    const block=Number(label.match(fillBlock)?.[1]??0);
+    const draw=Number(label.match(fillDraw)?.[1]??0);
+    if(!block&&!draw)continue;
+    out.push({option,block,draw,value:block*4+draw*6});
+  }
+  return out.sort((a,b)=>b.value-a.value);
+}
+
 // One locally-chosen next action inside a turn the program is already running.
 //
-// The intent is to stop asking a model about moves that only need arithmetic:
-// a cheap attack whose number and target are both known. The program still
-// refuses to be greedy: nothing is played while the displayed attack would be
-// lethal, and unknown effects are only risked from a healthy position.
+// Two cases are pure program work:
+//   1. a cheap attack whose number and target are both known,
+//   2. a self-contained block or draw play when no attack is available, which
+//      is what a player does with a hand of skills.
+// The program still refuses to be greedy: nothing is played while the displayed
+// attack would be lethal, and unknown effects are only risked from a healthy
+// position.
 export function nextLocalPlay(state,options){
   const attacks=incomingAttacks(state);
   const living=enemiesOf(state);
@@ -233,9 +254,21 @@ export function nextLocalPlay(state,options){
     if(risky&&!lethalNow&&hp<Number(state.player?.max_hp??0)*.5)continue;
     ranked.push({option,damage,risky,cost:Number(option.command?.card_index??0)});
   }
-  if(!ranked.length)return null;
-  ranked.sort((a,b)=>(a.risky?1:0)-(b.risky?1:0)||b.damage-a.damage||a.cost-b.cost);
-  const pick=ranked[0];
-  return {kind:'resolve',reason:`Continue the turn with a known ${pick.damage}-damage play`,
-    option:pick.option,evidence:{incoming:attacks.total,block,hp,damage:pick.damage}};
+  if(ranked.length){
+    ranked.sort((a,b)=>(a.risky?1:0)-(b.risky?1:0)||b.damage-a.damage||a.cost-b.cost);
+    const pick=ranked[0];
+    return {kind:'resolve',reason:`Continue the turn with a known ${pick.damage}-damage play`,
+      option:pick.option,evidence:{incoming:attacks.total,block,hp,damage:pick.damage}};
+  }
+
+  // No attack to continue with: a defensive or draw play is still better than
+  // paying a model round trip, and a hand that expires at end of turn makes it
+  // strictly better than doing nothing.
+  const fill=fillOptions(state,options);
+  if(fill.length){
+    const pick=fill[0];
+    return {kind:'resolve',reason:`Play a self-contained ${pick.block?`${pick.block}-block`:`${pick.draw}-draw`} card with no attack available`,
+      option:pick.option,evidence:{incoming:attacks.total,block,hp,value:pick.value}};
+  }
+  return null;
 }
