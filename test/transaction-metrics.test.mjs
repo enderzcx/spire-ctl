@@ -55,3 +55,9 @@ test('same run with a protocol change is two evidence windows, never a dominant-
  const report=turnMetrics(rows);assert.equal(report.runs,2);
  assert.deepEqual(report.batches.map(b=>b.protocol),[3,4]);
 });
+
+test('patch versions using the same protocol still have separate evidence windows',()=>{
+ const rows=['0.2.0','0.2.1'].map(core_version=>({protocol:4,core_version,event:'ask',state:fixture(),requests:1}));
+ const report=turnMetrics(rows);assert.equal(report.runs,2);
+ assert.deepEqual(report.batches.map(b=>b.core_version),['0.2.0','0.2.1']);
+});

@@ -100,7 +100,7 @@ export function splitRuns(rows){
   const batches=[];let current=[],priorRun=null,protocol;
   for(const row of rows){
     if(!isObject(row))continue;
-    const nextProtocol=row.protocol??'unversioned';
+    const nextProtocol=`${row.protocol??'unversioned'}|${row.core_version??'legacy'}`;
     const run=row.before?.run??row.after?.run??row.state?.run;
     const reset=priorRun&&isNum(run?.floor)&&
       (run.act<priorRun.act||(run.act===priorRun.act&&run.floor<priorRun.floor));
@@ -291,7 +291,7 @@ export function turnMetrics(rows,batch=3){
       counts.set(key,(counts.get(key)??0)+1);
     }
     const protocol=[...counts.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0]??'unversioned';
-    return {batch:position+1,protocol,turns,
+    return {batch:position+1,protocol,core_version:runRows.find(row=>row.core_version)?.core_version??null,turns,
       summary:{turns_total:turns.length,turns_complete:turns.filter(t=>t.complete).length,
         jev_calls_within_turns:turns.reduce((total,t)=>total+t.model_calls,0),
         jev_requests:turns.reduce((total,t)=>total+t.model_requests,0),

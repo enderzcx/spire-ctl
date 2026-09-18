@@ -1,11 +1,12 @@
 import {actions,inCombat,stateId} from './game.mjs';
-import {envelope,withLock,recorder,PROTOCOL,execute} from './dispatch.mjs';
+import {envelope,withLock,recorder,PROTOCOL,CORE_VERSION,execute} from './dispatch.mjs';
 import {loadStrategy,seenHandoff,noteHandoff,guardSignature,noteGuard,strategyApplies,handoffKey} from './strategy.mjs';
 import {mechanicalPlan} from './mechanical.mjs';
 import {decideCombat} from './decision.mjs';
 import {runPlan} from './plan.mjs';
+import {JEV_MODEL} from './jev.mjs';
 
-export {envelope,withLock,recorder,PROTOCOL,execute};
+export {envelope,withLock,recorder,PROTOCOL,CORE_VERSION,execute};
 
 export async function battle(game,decide,{dir,control=dir,max=60,record=recorder(dir),
   strategy=null,expectedStateId=null}={}){
@@ -38,7 +39,7 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
       }
     }
     const start=performance.now();
-    const key=handoffKey(env.state_id,agreed,{protocol:PROTOCOL});
+    const key=handoffKey(env.state_id,agreed,{protocol:`${PROTOCOL}:${CORE_VERSION}:${JEV_MODEL}`});
     const prior=await seenHandoff(dir,key);
     let decision;
     try{
@@ -69,7 +70,7 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
             instruction:'This guard state was already reported; return a decision or a strategy with explicit conditions and expiry so the loop can continue'};
         }
       }
-      if(decision.reason==='low_confidence'||decision.reason==='low_confidence_candidate'||decision.reason==='repeated_state'){
+      if(decision.requests>0||decision.reason==='low_confidence'||decision.reason==='low_confidence_candidate'||decision.reason==='repeated_state'){
         const noted=await noteHandoff(dir,key,decision.reason);
         await record({event:'takeover',source:'planner',reason:decision.reason,state_id:env.state_id,state:{run:s.run,battle:{round:s.battle?.round}},
           repeat_count:noted.count,confidence:decision.proposal?.answer?.confidence??null});

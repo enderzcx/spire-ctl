@@ -1,6 +1,6 @@
 # Validation
 
-## 0.2.0 / protocol 4 acceptance
+## 0.2.1 / protocol 4 acceptance
 
 This refactor has offline controller/adapter/transaction regression evidence. Historical gameplay below belongs to earlier implementations and is not evidence of new-version speed or win rate. Fresh live gameplay has not been resumed during this refactor. The state envelope reports the installed core version and protocol.
 

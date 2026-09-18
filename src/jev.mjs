@@ -2,6 +2,8 @@
 import {buildInput,NEXT_ACTION_INSTRUCTIONS} from './input.mjs';
 import {CANDIDATE_INSTRUCTIONS} from './planning.mjs';
 
+export const JEV_MODEL='jev-1.13.0';
+
 function validConfidence(value){
   return Number.isFinite(value)&&value>=0&&value<=1;
 }
@@ -37,7 +39,7 @@ export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,
     requests+=1;
     res=await fetcher('https://api.typesafe.ai/v1/systemone',{method:'POST',
       headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'},
-      body:JSON.stringify({model:'jev-latest',state:input,questions}),
+      body:JSON.stringify({model:JEV_MODEL,state:input,questions}),
       signal:signal?AbortSignal.any([signal,AbortSignal.timeout(8000)]):AbortSignal.timeout(8000)});
   }catch(error){
     fail(error.message||'Jev request failed',requests);

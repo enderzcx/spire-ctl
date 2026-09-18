@@ -34,6 +34,11 @@ function singleCandidate(state,option,store){
   const projected=option.command?.action==='play_card'?projectPlay(state,option):{known:false};
   const card=(state.player?.hand??[]).find(entry=>entry.index===option.command?.card_index)??{};
   const attacks=incomingAttacks(state);
+  // End turn has no card projection, but known displayed lethal damage must
+  // still be rejected. This is not a claim to simulate all end-turn triggers.
+  const endGap=option.command?.action==='end_turn'&&attacks.known
+    &&Number.isFinite(state.player?.hp)&&Number.isFinite(state.player?.block)
+    ?Math.max(0,attacks.total-state.player.block):null;
   return {
     id:null,
     kind:'single',
@@ -57,8 +62,8 @@ function singleCandidate(state,option,store){
     kills:projected.known?projected.kills:0,
     verified:Boolean(projected.known),
     incoming:attacks.known?attacks.total:null,
-    unblocked:projected.known?projected.unblocked:null,
-    survives:projected.known?projected.survives:null
+    unblocked:projected.known?projected.unblocked:endGap,
+    survives:projected.known?projected.survives:(endGap===null?null:endGap<state.player.hp)
   };
 }
 
