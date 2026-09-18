@@ -26,17 +26,25 @@
 
 默认置信度阈值不是胜率保证。当前策略仍会接管，不是全自动通关承诺。测试结果、支持范围和未验证场景见 [验证记录](docs/VALIDATION.md)。
 
+## DSH 原生插件
+
+想在 DSH 中直接使用原生工具，可安装独立的 [DSH Spire Jev 插件](https://github.com/enderzcx/dsh-spire-jev)。核心不依赖 DSH；插件只负责适配。
+
 ## 准备
 
 - 自己安装的《杀戮尖塔 2》，单人模式。
 - Node.js 22+，无需 npm 依赖。
 - TypeSafe API key（运行 Jev 时需要）。
 - 本项目适配的 [STS2MCP](https://github.com/Gennadiyev/STS2MCP) 游戏 Mod。
-- 编译 Mod 需要 .NET 9 SDK、Git 和本机游戏程序集。
+- 仅从源码编译 Mod 时需要 .NET 9 SDK、Git 和本机游戏程序集。
 
 目前在 macOS arm64、游戏 v0.107.1 上验证。其他版本可能有 API 变化；不应直接视为兼容。先关闭游戏并备份存档，再安装 Mod。
 
-### 1. 编译并安装 Mod
+### 1. 安装 Mod
+
+macOS arm64、游戏 v0.107.1 可直接下载 [已编译桥接包](https://github.com/enderzcx/spire-jev/releases/tag/v0.1.1)，按包内说明复制 DLL 和 JSON。包内附来源、补丁、许可证和校验值，不包含游戏或存档。其他版本请自行验证兼容性。
+
+从源码编译：
 
 ```sh
 export STS2_GAME_DIR='/path/to/SteamLibrary/steamapps/common/Slay the Spire 2'
