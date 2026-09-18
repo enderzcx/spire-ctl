@@ -114,6 +114,7 @@ node bin/spire.mjs clear-halt STATE_ID
 ```sh
 npm test
 npm run check
+node scripts/summarize.mjs .runtime/events.jsonl
 ```
 
 每次战斗调用最多 100 步，输入 token 预算在请求之间检查。模型失败和游戏动作均不自动重试。数据只发往配置的 Jev 服务；日志不包含 API key。不要公开原始个人存档或本地 harness 配置。
