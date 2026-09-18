@@ -16,11 +16,15 @@
 
 | 场景 | 谁处理 |
 |---|---|
+| 动画结算、旧状态核对 | 程序等待 |
+| 已知攻击能被一手牌完全挡下（无副作用） | 程序出牌 |
+| 本回合继续打数值与目标都明确的攻击牌 | 程序连续执行 |
 | 普通战斗中的下一手牌 | Jev |
+| Jev 低置信度但程序能给出候选 | Jev 收窄选项重问 |
 | 无牌可出且无需紧急考虑药水 | 程序结束回合 |
 | 新牌、路线、商店、事件、药水取舍 | 主模型 |
-| 低血量、可能致命的攻击、陌生意图、低置信度 | 主模型 |
-| 动画、旧状态、动作结果未知 | 程序等待或停止 |
+| 可能致命的攻击无法挡下、陌生意图 | 主模型 |
+| 动作结果未知 | 程序停止，核实后再继续 |
 
 确定性回合可以先排好一个多卡计划，再用 `plan` 连续执行，期间不调用模型。程序逐张检查预测结果；抽牌、随机变化或选牌弹窗出现时重新规划。格式见 [回合计划](docs/ROUND-PLAN.md)。
 
@@ -112,9 +116,11 @@ node bin/spire.mjs clear-halt STATE_ID
 ## 工程说明
 
 - `src/game.mjs`：游戏接口、状态标识、动作列表和分工规则。
+- `src/policy.mjs`：程序侧算术与局部策略（斩杀线、保命、同回合连续执行）。
 - `src/jev.mjs`：独立 TypeSafe 适配器；要换快模型，保持返回所给选项即可。
 - `src/runner.mjs`：执行、读回、预算、暂停和记录。
 - `src/plan.mjs`：回合计划和逐步预期结果校验。
+- `src/metrics.mjs`：回合级指标（耗时分段、接管原因、计划长度），只读日志。
 - `bin/spire.mjs`：通用 JSON CLI，主模型不绑定任何厂商。
 - `bridge/`：上游版本、许可证和兼容补丁。
 - `.runtime/`：私有实测记录与停止标记，默认不进入 Git。
@@ -123,7 +129,10 @@ node bin/spire.mjs clear-halt STATE_ID
 npm test
 npm run check
 node scripts/summarize.mjs .runtime/events.jsonl
+node scripts/metrics-jsonl.mjs .runtime/events.jsonl --turns 6
 ```
+
+`metrics-jsonl` 区分每回合的 `turn_ms`（首次出牌到最后一次结算）、`action_ms`（游戏动画与结算）和 `agent_gap_ms`（出牌之间等模型与编排），并统计 `local_decision` 的类别与原因。它只能看到 Jev 的调用；主模型调用次数由调用方 harness 记录。
 
 每次战斗调用最多 100 步，输入 token 预算在请求之间检查。模型失败和游戏动作均不自动重试。数据只发往配置的 Jev 服务；日志不包含 API key。不要公开原始个人存档或本地 harness 配置。
 

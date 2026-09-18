@@ -1,0 +1,103 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm,readFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {stateId} from '../src/game.mjs';
+import {battle} from '../src/runner.mjs';
+import {choose} from '../src/jev.mjs';
+import {localPolicy} from '../src/policy.mjs';
+
+const temporary=async fn=>{const dir=await mkdtemp(join(tmpdir(),'spire-local-'));try{await fn(dir);}finally{await rm(dir,{recursive:true,force:true});}};
+const rows=async dir=>(await readFile(join(dir,'events.jsonl'),'utf8')).trim().split('\n').filter(Boolean).map(line=>JSON.parse(line));
+
+const enemy=({hp=6,intents=[{type:'Attack',label:'5',title:'攻势'}],...overrides}={})=>({entity_id:'E_0',combat_id:1,name:'Enemy',hp,max_hp:hp,block:0,intents,status:[],...overrides});
+const card=(index,label,{cost='1',target=null,type='Attack'}={})=>({id:`CARD_${index}`,index,name:label.split(':')[0],type,cost,
+  target_type:target?'AnyEnemy':'Self',can_play:true,unplayable_reason:null,description:label,keywords:[],is_upgraded:false,rarity:'Common',star_cost:null});
+const combat=(overrides={})=>({state_type:'monster',run:{act:1,floor:4},player:{hp:40,max_hp:80,block:0,energy:3,
+  hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。')],potions:[],...overrides.player},
+  battle:{ready_for_action:true,turn:'player',round:1,action_running:false,action_queue_empty:true,
+    enemies:[enemy()],...overrides.battle}});
+
+test('the program takes a decided lethal line without asking the model',()=>temporary(async dir=>{
+  const start=combat({battle:{enemies:[enemy({hp:6})]}});
+  const after={state_type:'rewards',rewards:{items:[],can_proceed:true},run:start.run,player:{...start.player,hand:[]}};
+  let calls=0,sends=0;
+  const game={read:async()=>sends?after:start,settled:async()=>sends?after:start,send:async()=>{sends++;return{status:'ok'};}};
+  const result=await battle(game,async()=>{calls++;return{option:{id:'0'},answer:{confidence:.99}};},{dir,max:3});
+  assert.equal(calls,0);
+  assert.equal(result.reason,'left_combat');
+  const events=await rows(dir);
+  const local=events.find(row=>row.event==='local_decision');
+  assert.equal(local.kind,'kill');
+  assert.match(local.reason,/cover all 1 living enemies/);
+  assert.equal(events.find(row=>row.event==='dispatch').source,'local');
+}));
+
+test('unblockable displayed lethal damage hands over instead of guessing',()=>temporary(async dir=>{
+  const start=combat({player:{hp:25,block:0,energy:3,hand:[card(0,'打击: 造成6点伤害。'),card(1,'打击: 造成6点伤害。')],max_hp:80,potions:[]},
+    battle:{enemies:[enemy({hp:40,intents:[{type:'Attack',label:'26',title:'重击'}]})]}});
+  let sent=0;
+  const game={settled:async()=>start,send:async()=>{sent++;return{status:'ok'};}};
+  let calls=0;
+  const result=await battle(game,async()=>{calls++;return{option:{id:'0'},answer:{confidence:.9}};},{dir});
+  assert.match(result.reason,/^Potential lethal incoming damage$/);
+  assert.equal(sent,0);
+  assert.equal(calls,0);
+}));
+
+test('a mitigation shortlist is handed to the model and recorded on the decision',()=>temporary(async dir=>{
+  const start=combat({player:{hp:60,energy:3,hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。',{type:'Skill'})],max_hp:80,block:0,potions:[]},
+    battle:{enemies:[enemy({hp:40,intents:[{type:'Attack',label:'18',title:'重击'}]})]}});
+  const after={state_type:'rewards',rewards:{items:[],can_proceed:true},run:start.run,player:{...start.player,hand:[]}};
+  let sends=0;
+  const game={read:async()=>sends?after:start,settled:async()=>sends?after:start,send:async()=>{sends++;return{status:'ok'};}};
+  let observed=null;
+  await battle(game,async(_s,_o,shortlist)=>{observed=shortlist;
+    return {option:{id:'1'},answer:{confidence:.8,shortlist_reason:shortlist?.reason,narrowed:Boolean(shortlist)},usage:{input_tokens:5}};},{dir,max:2});
+  assert.equal(observed.kind,'shortlist');
+  assert.match(observed.reason,/significant|Significant|mitigation/i);
+  const decision=(await rows(dir)).find(row=>row.event==='decision');
+  assert.equal(decision.shortlist_reason,observed.reason);
+  assert.equal(JSON.parse(JSON.stringify(decision)).option.id,'1');
+}));
+
+test('a low-confidence answer is retried on a narrowed menu before escalating',async()=>{
+  const options=[{id:'0',command:{action:'play_card',card_index:0},label:'打击: 造成6点伤害。'},
+    {id:'1',command:{action:'play_card',card_index:1},label:'防御: 获得5点格挡。'},
+    {id:'2',command:{action:'end_turn'},label:'End turn'}];
+  const state=combat().player&&combat();
+  const menus=[];
+  const fetcher=async(_url,init)=>{
+    const body=JSON.parse(init.body);
+    menus.push(Object.keys(body.questions.next.criteria));
+    const narrow=menus.length>1;
+    return {ok:true,json:async()=>({model:'jev-latest',usage:{input_tokens:10},
+      answers:{next:{choice:narrow?'1':'0',confidence:narrow?.7:.3}}})};
+  };
+  const result=await choose(state,options,{apiKey:'test-key',fetcher,shortlist:{options:[options[1]],reason:'5 block against 18 displayed damage'}});
+  assert.equal(menus.length,2);
+  assert.deepEqual(menus[0],['0','1','2']);
+  assert.deepEqual(menus[1],['1']);
+  assert.equal(result.narrowed,true);
+  assert.equal(result.retried,true);
+  assert.equal(result.option.id,'1');
+  assert.equal(result.answer.confidence,.7);
+});
+
+test('the original cutoff still escalates when no shortlist exists',async()=>{
+  const options=[{id:'0',command:{action:'play_card',card_index:0},label:'打击: 造成6点伤害。'},
+    {id:'1',command:{action:'end_turn'},label:'End turn'}];
+  let calls=0;
+  const fetcher=async()=>{calls++;return{ok:true,json:async()=>({answers:{next:{choice:'1',confidence:.4}}})};};
+  const result=await choose(combat(),options,{apiKey:'test-key',fetcher});
+  assert.equal(calls,1);
+  assert.equal(result.narrowed,false);
+  assert.equal(result.answer.confidence,.4);
+  const quiet=combat({battle:{enemies:[enemy({hp:40,intents:[{type:'Buff',title:'强化',label:''}]})]}});
+  assert.equal(localPolicy(quiet,options).kind,'decline');
+});
+
+test('choose refuses an empty menu instead of inventing an action',async()=>{
+  await assert.rejects(choose(combat(),[],{apiKey:'test-key',fetcher:async()=>{throw Error('must not be called');}}),/No options/);
+});

@@ -1,6 +1,7 @@
 import {mkdir,readFile,writeFile,appendFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {actions,inCombat,route,stateId,incomingDamage} from './game.mjs';
+import {localPolicy,guardOption,nextLocalPlay} from './policy.mjs';
 
 export function envelope(state){
   const options=actions(state),incoming=inCombat(state)?incomingDamage(state):null;
@@ -40,7 +41,7 @@ export async function execute(game,expectedId,optionId,{dir,control=dir,record=r
   }
 }
 
-export async function battle(game,decide,{dir,control=dir,max=60,record=recorder(dir)}={}){
+export async function battle(game,decide,{dir,control=dir,max=60,record=recorder(dir),policy=localPolicy}={}){
   if(!Number.isInteger(max)||max<1||max>100)throw Error('max must be 1..100');
   let s=await game.settled(),tokens=0,steps=0;const room=JSON.stringify(s.run);
   for(;steps<max;steps++){
@@ -49,14 +50,52 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
     if(env.route.kind==='planner')return {reason:env.route.reason,steps,...env};
     if(env.route.kind==='wait')throw Error('Unexpected busy state');
     if(tokens>=100000)return {reason:'token_budget',steps,...env};
-    const start=performance.now();let option=env.route.option,source='deterministic';
+    const start=performance.now();let option=env.route.option,source='deterministic',local=null;
     if(env.route.kind==='jev'){
-      const candidates=env.options.filter(o=>o.command.action!=='use_potion');
-      const d=await decide(s,candidates);tokens+=d.usage?.input_tokens??0;
-      await record({event:'decision',source:'jev',state_id:env.state_id,...d});
-      if(d.answer.confidence<.5)return {reason:'low_confidence',proposal:d,steps,...env};
-      option=d.option;source='jev';
+      // The program decides only what the arithmetic already settled: an exact
+      // lethal line, or the only play that survives displayed lethal damage.
+      // Displayed lethal damage that this hand cannot block is a real planner
+      // decision, not a fast-model guess.
+      const decision=policy?policy(s,env.options):null;
+      if(decision?.kind==='escalate')return {reason:decision.reason,steps,...env,local_evidence:decision.evidence};
+      // `kill` proposes an ordered line, `play`/`guard` a single action, and
+      // `resolve` continues a turn the program is already running. All of them
+      // are program-settled, so no model call is needed for them.
+      const localOption=['play','guard'].includes(decision?.kind)?decision.option:
+        decision?.kind==='kill'?decision.options?.[0]??null:null;
+      if(localOption){option=localOption;source='local';local=decision;}
+      // Nothing forced a decision and the turn is not over: keep playing moves
+      // that are pure arithmetic (a known number on a known target) instead of
+      // paying a model round trip per card. A guard above still wins.
+      if(!option&&decision?.kind==='decline'){
+        const next=nextLocalPlay(s,env.options);
+        if(next){option=next.option;source='local';local=next;}
+      }
+      if(!option){
+        const candidates=env.options.filter(o=>o.command.action!=='use_potion');
+        const shortlist=decision?.kind==='shortlist'?decision:null;
+        const d=await decide(s,candidates,shortlist);
+        tokens+=d.usage?.input_tokens??0;
+        // Hoist the shortlist provenance so the log shows, without reading the
+        // model answer, whether a narrowed menu produced this decision.
+        await record({event:'decision',source:'jev',state_id:env.state_id,...d,
+          shortlist_reason:d.answer?.shortlist_reason??null,narrowed:d.answer?.narrowed??false});
+        if(d.answer.confidence<.5){
+          // The cutoff is unchanged. A low-confidence answer is only a handoff
+          // when the program has no fully-determined move of its own; a guard
+          // that covers the whole displayed attack is such a move.
+          const fallback=policy?guardOption(s,env.options):null;
+          if(!fallback)return {reason:'low_confidence',proposal:d,steps,...env};
+          option=fallback.option;source='local';local={...fallback,low_confidence:d.answer.confidence};
+        }else{
+          option=d.option;source='jev';
+        }
+        option=d.option;source='jev';
+      }
     }
+    if(local)await record({event:'local_decision',source:'local',state_id:env.state_id,
+      kind:local.kind,reason:local.reason,evidence:local.evidence,option,
+      line:local.kind==='kill'?(local.options??[]).map(o=>o.label):undefined});
     const next=await execute(game,env.state_id,option.id,{dir,control,record,source});
     await record({event:'cycle',source,total_ms:Math.round(performance.now()-start),action_ms:next.action_ms});
     s=next.state;

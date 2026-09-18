@@ -24,7 +24,7 @@ export function createController({endpoint=process.env.SPIRE_API_URL??'http://12
   return {
     async state({signal}={}){signal?.throwIfAborted();const s=await game(signal).read();return {...envelope(s),planning_state:projection(s)};},
     act:(expected,id,{signal}={})=>mutate(signal,(g,opts)=>execute(g,expected,id,opts)),
-    battle:(max=60,{signal}={})=>mutate(signal,(g,opts)=>battle(g,(s,o)=>choose(s,o,{apiKey,signal}),{...opts,max})),
+    battle:(max=60,{signal}={})=>mutate(signal,(g,opts)=>battle(g,(s,o,shortlist)=>choose(s,o,{apiKey,signal,shortlist}),{...opts,max})),
     plan:(plan,{signal}={})=>mutate(signal,(g,opts)=>runPlan(g,plan,opts)),
     clearHalt:(expected,{signal}={})=>mutate(signal,async g=>{
       const s=await g.read();if(stateId(s)!==expected)throw Error('State changed');
