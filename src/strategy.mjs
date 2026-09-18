@@ -60,13 +60,16 @@ function expiryFires(condition,state){
   return conditionHolds(condition,state);
 }
 
-export function strategyApplies(strategy,state){
+export function strategyApplies(strategy,state,{inCall=false}={}){
   if(!strategy||!Array.isArray(strategy.conditions)||!strategy.conditions.length)
     return {ok:false,reason:'strategy has no conditions'};
-  if(!strategy.run_identity)return {ok:false,reason:'strategy is missing run identity'};
-  const identity=runIdentity(state);
-  if(!identity||identity!==strategy.run_identity)
-    return {ok:false,reason:'strategy belongs to a different run'};
+  const ephemeral=inCall||strategy.in_call===true;
+  if(!ephemeral){
+    if(!strategy.run_identity)return {ok:false,reason:'strategy is missing run identity'};
+    const identity=runIdentity(state);
+    if(!identity||identity!==strategy.run_identity)
+      return {ok:false,reason:'strategy belongs to a different run'};
+  }
   if(strategy.expires_on?.length)
     for(const condition of strategy.expires_on)
       if(expiryFires(condition,state))
@@ -92,7 +95,7 @@ export function strategyPreference(strategy,options){
 }
 
 export function constrainOptions(strategy,options){
-  if(!strategy?.order?.length)return options;
+  if(!strategy?.order?.length)return {options,matched:true};
   const matched=[];
   for(const preference of strategy.order){
     const pattern=String(preference.match??'');
@@ -100,7 +103,10 @@ export function constrainOptions(strategy,options){
     for(const option of options)
       if(String(option.label??'').includes(pattern)&&!matched.includes(option))matched.push(option);
   }
-  return matched.length?matched:options;
+  if(!matched.length)return {options:[],matched:false};
+  const endTurn=options.find(option=>option.command?.action==='end_turn');
+  if(endTurn&&!matched.includes(endTurn))matched.push(endTurn);
+  return {options:matched,matched:true};
 }
 
 export async function loadStrategy(dir,state=null){

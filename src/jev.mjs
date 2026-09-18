@@ -1,5 +1,4 @@
-// Thin Jev transport: one request, validate, account. No tactical fallback,
-// no stability probe, no menu shrinking. The caller owns whether to act.
+// Thin Jev transport: one request, validate, account. Failures still count.
 import {buildInput,NEXT_ACTION_INSTRUCTIONS} from './input.mjs';
 import {CANDIDATE_INSTRUCTIONS} from './planning.mjs';
 
@@ -7,9 +6,11 @@ function validConfidence(value){
   return Number.isFinite(value)&&value>=0&&value<=1;
 }
 
-function accumulate(usage,extra){
-  usage.input_tokens+=Number(extra?.input_tokens??0);
-  usage.output_tokens+=Number(extra?.output_tokens??0);
+function fail(message,requests,usage={unavailable:true}){
+  const error=Error(message);
+  error.requests=requests;
+  error.usage=usage;
+  throw error;
 }
 
 export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,fetcher=fetch,signal,
@@ -19,44 +20,44 @@ export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,
   const input=providedInput??buildInput(state,options,{store:effects,policy:strategy??null});
   if(candidates?.length)input.candidates=candidates;
   if(shortlist)input.program_notes=shortlist.reason??null;
-  const usage={input_tokens:0,output_tokens:0};
   const started=performance.now();
   const planned=Array.isArray(candidates)&&candidates.length>=2;
   const criteria=planned
     ?Object.fromEntries(candidates.map(candidate=>[
       candidate.id,
-      `${candidate.title} | cards ${candidate.steps.map(step=>step.card?.name??step.card_index).join(' then ')} | cost ${candidate.energy} energy | damage ${candidate.damage} | block ${candidate.block} | kills ${candidate.kills} | survives displayed attack: ${candidate.survives}`
+      `${candidate.title} | ${candidate.kind??'line'} | verified ${candidate.verified} | cost ${candidate.energy} | damage ${candidate.damage} | block ${candidate.block} | kills ${candidate.kills} | survives: ${candidate.survives}`
     ]))
     :Object.fromEntries(input.options.map(option=>[option.id,option.label]));
   const questions=planned
     ?{plan:{type:'choice',instructions:CANDIDATE_INSTRUCTIONS,criteria}}
     :{next:{type:'choice',instructions:NEXT_ACTION_INSTRUCTIONS,criteria}};
-  const res=await fetcher('https://api.typesafe.ai/v1/systemone',{method:'POST',
-    headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'},
-    body:JSON.stringify({model:'jev-latest',state:input,questions}),
-    signal:signal?AbortSignal.any([signal,AbortSignal.timeout(8000)]):AbortSignal.timeout(8000)});
-  if(!res.ok)throw Error(`Jev returned HTTP ${res.status}; no action sent`);
+  let requests=0;
+  let res;
+  try{
+    requests+=1;
+    res=await fetcher('https://api.typesafe.ai/v1/systemone',{method:'POST',
+      headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'},
+      body:JSON.stringify({model:'jev-latest',state:input,questions}),
+      signal:signal?AbortSignal.any([signal,AbortSignal.timeout(8000)]):AbortSignal.timeout(8000)});
+  }catch(error){
+    fail(error.message||'Jev request failed',requests);
+  }
+  if(!res.ok)fail(`Jev returned HTTP ${res.status}; no action sent`,requests);
   const result=await res.json();
-  accumulate(usage,result.usage);
+  const usage=result.usage&&Number.isFinite(Number(result.usage.input_tokens))
+    ?{input_tokens:Number(result.usage.input_tokens??0),output_tokens:Number(result.usage.output_tokens??0)}
+    :{unavailable:true};
   const key=planned?'plan':'next';
   const answer=result.answers?.[key];
-  if(!answer||!validConfidence(answer.confidence))throw Error('Invalid Jev decision');
+  if(!answer||!validConfidence(answer.confidence))fail('Invalid Jev decision',requests,usage);
+  const meta={model:result.model,usage,requests,inference_ms:Math.round(performance.now()-started),
+    retried:false,narrowed:false,stable:false,planned};
   if(planned){
     const candidate=candidates.find(entry=>entry.id===answer.choice);
-    if(!candidate)throw Error('Invalid Jev decision');
-    const first=candidate.steps[0];
-    const option=options.find(entry=>entry.id===first.option_id);
-    if(!option)throw Error('Candidate step is not an advertised option');
-    return {
-      option,answer,candidate,model:result.model,usage,requests:1,
-      inference_ms:Math.round(performance.now()-started),
-      retried:false,narrowed:false,stable:false,planned:true
-    };
+    if(!candidate)fail('Invalid Jev decision',requests,usage);
+    const option=options.find(entry=>entry.id===(candidate.option_id??candidate.steps?.[0]?.option_id));
+    return {option:option??null,answer,candidate,...meta};
   }
-  if(!options.some(option=>option.id===answer.choice))throw Error('Invalid Jev decision');
-  return {
-    option:options.find(option=>option.id===answer.choice),answer,model:result.model,usage,requests:1,
-    inference_ms:Math.round(performance.now()-started),
-    retried:false,narrowed:false,stable:false,planned:false
-  };
+  if(!options.some(option=>option.id===answer.choice))fail('Invalid Jev decision',requests,usage);
+  return {option:options.find(option=>option.id===answer.choice),answer,...meta};
 }

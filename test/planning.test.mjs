@@ -15,9 +15,10 @@ test('candidates carry computed energy, damage, kills and survival',()=>{
   const options=[option(0,0,'打击: 造成6点伤害。 -> E (20 HP)',{target:'E_0'}),option(1,1,'防御: 获得5点格挡。')];
   const candidates=planCandidates(s,options);
   assert.ok(candidates.length>=2);
-  for(const candidate of candidates){
+  const verified=candidates.filter(candidate=>candidate.verified);
+  assert.ok(verified.length>=1);
+  for(const candidate of verified){
     assert.equal(typeof candidate.energy,'number');
-    assert.equal(typeof candidate.damage,'number');
     assert.equal(typeof candidate.survives,'boolean');
   }
   const blockLine=candidates.find(c=>c.block>0);
@@ -29,8 +30,8 @@ test('a confirmable kill is offered as its own candidate',()=>{
   const s=state({player:{energy:2,hand:[card(0,'打击: 造成6点伤害。')]},
     enemies:[{entity_id:'E_0',combat_id:1,name:'E',hp:6,max_hp:6,block:0,intents:[{type:'Attack',label:'4'}]}]});
   const candidates=planCandidates(s,[option(0,0,'打击: 造成6点伤害。 -> E (6 HP)',{target:'E_0'})]);
-  assert.equal(candidates[0].kills,1);
-  assert.match(candidates[0].title,/Kill/);
+  const kill=candidates.find(candidate=>candidate.kills===1);
+  assert.ok(kill,'a verified lethal single is offered');
 });
 
 test('a prefix never exceeds the energy budget and never repeats a card',()=>{
@@ -38,6 +39,7 @@ test('a prefix never exceeds the energy budget and never repeats a card',()=>{
   const options=[option(0,0,'打击: 造成6点伤害。 -> E (20 HP)',{target:'E_0'}),
     option(1,1,'打击: 造成6点伤害。 -> E (20 HP)',{target:'E_0'})];
   for(const candidate of planCandidates(s,options)){
+    if(candidate.energy==null)continue;
     assert.ok(candidate.energy<=1,`cost ${candidate.energy} within budget`);
     const indices=candidate.steps.map(step=>step.card.card_index??step.card.index);
     for(const index of indices)assert.ok(Number.isInteger(index)||index===null);
@@ -74,8 +76,9 @@ test('a strategy preference outranks the model ranking',()=>{
     {id:'c1',title:'b',energy:1,damage:6,block:0,kills:0,survives:true,steps:[{card:{name:'痛击',effect:'Apply Vulnerable.'}}]}
   ];
   const chosen=chooseCandidate(candidates,{choice:'c0'},{order:[{match:'痛击'}]});
-  assert.equal(chosen.candidate.id,'c1');
-  assert.match(chosen.why,/strategy preference/);
+  assert.equal(chosen.candidate,null);
+  assert.match(chosen.why,/contradicts strategy/);
+  assert.equal(chooseCandidate(candidates,{choice:'c1'},{order:[{match:'痛击'}]}).candidate.id,'c1');
 });
 
 test('the adapter asks one candidate choice and no decorative survival questions',async()=>{
@@ -99,6 +102,15 @@ test('the adapter asks one candidate choice and no decorative survival questions
   assert.ok(options.some(o=>o.id===result.option.id));
   assert.equal(result.usage.input_tokens,120);
   assert.equal(result.requests,1);
+});
+
+test('the menu keeps every single action including end turn',()=>{
+  const s=state({player:{energy:3,hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','1','Skill')]}});
+  const options=[option(0,0,'打击: 造成6点伤害。 -> E (20 HP)',{target:'E_0'}),option(1,1,'防御: 获得5点格挡。'),
+    {id:'2',command:{action:'end_turn'},label:'End turn'}];
+  const candidates=planCandidates(s,options);
+  assert.ok(candidates.some(c=>c.title==='End turn'));
+  assert.ok(candidates.filter(c=>c.kind==='single').length>=3);
 });
 
 test('an unused candidate path never asks a model',async()=>{

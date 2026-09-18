@@ -13,7 +13,13 @@ async function main(){
     if(args.length!==1)throw Error('Usage: plan PLAN.json');
     return controller.plan(JSON.parse(await readFile(args[0],'utf8')));
   }
-  if(command==='battle')return controller.battle(Number(args[0]??60));
+  if(command==='battle'){
+    const max=Number(args[0]??60);
+    if(!args[1])return controller.battle(max);
+    const payload=JSON.parse(await readFile(args[1],'utf8'));
+    const strategy=payload.strategy??payload;
+    return controller.battle(max,{strategy,expectedStateId:payload.expected_state_id??payload.expectedStateId});
+  }
   if(command==='advance')return controller.advance(Number(args[0]??20));
   if(command==='clear-halt'){
     if(args.length!==1)throw Error('Read and inspect state, then clear-halt STATE_ID');
@@ -24,7 +30,7 @@ async function main(){
     return controller.saveStrategy(JSON.parse(await readFile(args[0],'utf8')));
   }
   if(command==='strategy')return controller.strategy();
-  return {usage:['state','act STATE_ID OPTION_ID','plan PLAN.json','battle [MAX_STEPS]','advance [MAX_STEPS]','clear-halt STATE_ID','save-strategy STRATEGY.json','strategy'],
+  return {usage:['state','act STATE_ID OPTION_ID','plan PLAN.json','battle [MAX_STEPS] [STRATEGY.json]','advance [MAX_STEPS]','clear-halt STATE_ID','save-strategy STRATEGY.json','strategy'],
     note:'Read docs/AGENT.md before playing. advance only performs mechanical steps and stops at a decision.'};
 }
 main().then(r=>console.log(JSON.stringify(r,null,2))).catch(e=>{console.error(JSON.stringify({error:e.message}));process.exitCode=1;});

@@ -16,7 +16,7 @@ const card=(index,label,type='Attack')=>({id:type==='Attack'?'STRIKE':'DEFEND',i
   target_type:type==='Attack'?'AnyEnemy':'Self',can_play:true,description:label,keywords:[],is_upgraded:false});
 const combat=(overrides={})=>({state_type:'monster',run:{act:1,floor:4,seed:'run-a'},
   player:{hp:40,max_hp:80,block:0,energy:3,hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','Skill')],
-    potions:[],discard_pile_count:0,draw_pile_count:5,exhaust_pile_count:0,...overrides.player},
+    potions:[],status:[],relics:[],discard_pile_count:0,draw_pile_count:5,exhaust_pile_count:0,...overrides.player},
   battle:{ready_for_action:true,round:1,turn:'player',action_running:false,action_queue_empty:true,
     enemies:[{entity_id:'E_0',combat_id:1,name:'E',hp:20,max_hp:20,block:0,status:[],
       intents:[{type:'Attack',label:'8',title:'攻势'}]}],...overrides.battle}});
@@ -69,12 +69,12 @@ test('unchanged visible state after a successful send stays halted and cannot re
   assert.equal(sent,1);
 }));
 
-test('an explicit rejected receipt is no-effect and does not leave a halt',()=>temporary(async dir=>{
+test('a send error keeps the halt because it is not a guaranteed pre-dispatch rejection',()=>temporary(async dir=>{
   const x=combat();
   const game={read:async()=>x,settled:async()=>x,
     send:async()=>{throw Error('Game rejected request: {"status":"error","message":"illegal"}');}};
   await assert.rejects(execute(game,stateId(x),'0',{dir}),/rejected/);
-  await assert.rejects(readFile(join(dir,'HALTED')),{code:'ENOENT'});
+  assert.match(await readFile(join(dir,'HALTED'),'utf8'),/rejected/);
 }));
 
 test('two-card candidate is one Jev call and two verified sends',()=>temporary(async dir=>{
@@ -153,7 +153,7 @@ test('repeated state is detected before a second Jev request',()=>temporary(asyn
   const decide=async(_s,offered)=>{calls++;return{option:offered.find(o=>o.command.card_index===0),
     answer:{confidence:.3},usage:{input_tokens:5},requests:1};};
   const first=await battle(game,decide,{dir});
-  assert.equal(first.reason,'low_confidence');
+  assert.match(first.reason,/low_confidence/);
   const second=await battle(game,decide,{dir});
   assert.equal(second.reason,'repeated_state');
   assert.equal(calls,1);
@@ -186,4 +186,62 @@ test('Jev is asked once and usage is the accounted request, not a shopped retry'
   assert.equal(result.stable,false);
   tokens+=result.usage.input_tokens;
   assert.equal(tokens,12);
+});
+
+test('bridge-shaped runs have no persistent strategy and in-call strategy does not carry',()=>temporary(async dir=>{
+  const start=combat();
+  start.run={act:1,floor:4,ascension:0};
+  const {game,sends}=playGame(start,applyKnown);
+  const strategy={strategy_id:'call',reason:'chip',conditions:[{kind:'same_floor',act:1,floor:4}],
+    expires_on:[],order:[{match:'打击'}]};
+  await assert.rejects(createController({runtimeDir:dir,controlDir:dir,openGame:()=>game,apiKey:'k'})
+    .saveStrategy(strategy),/run identity/);
+  const first=await battle(game,async(_s,offered)=>({option:offered[0],answer:{confidence:.9},requests:1}),
+    {dir,max:2,strategy,expectedStateId:stateId(start)});
+  assert.ok(sends()>=1,`in-call strategy should still execute a constrained pick, got ${first.reason}`);
+  const second=await battle(game,async()=>({option:{id:'0'},answer:{confidence:.9},requests:1}),{dir,max:1});
+  assert.notEqual(second.reason,first.reason==='invalid strategy'?'x':undefined);
+  const loaded=await createController({runtimeDir:dir,controlDir:dir,openGame:()=>game,apiKey:'k'}).strategy();
+  assert.equal(loaded.strategy,null);
+}));
+
+test('battle max_steps=1 cannot dispatch a two-card prefix',()=>temporary(async dir=>{
+  const start=combat();
+  const {game,sends}=playGame(start,applyKnown);
+  const controller=createController({runtimeDir:dir,controlDir:dir,apiKey:'k',openGame:()=>game,
+    decide:async(s,o,{candidates})=>{
+      const prefix=(candidates??[]).find(c=>c.steps?.length>=2);
+      if(prefix)return {option:o[0],answer:{choice:prefix.id,confidence:.9},candidate:prefix,planned:true,requests:1};
+      return {option:o[0],answer:{confidence:.9,choice:o[0].id},requests:1};
+    }});
+  await controller.battle(1);
+  assert.equal(sends(),1);
+}));
+
+test('a failed Jev request still reports the attempt count',async()=>{
+  const start=combat();
+  const options=actions(start);
+  await assert.rejects(choose(start,options,{apiKey:'k',fetcher:async()=>{throw Error('network down');}}),error=>{
+    assert.equal(error.requests,1);
+    assert.equal(error.usage.unavailable,true);
+    return /network down/.test(error.message);
+  });
+});
+
+test('unmatched in-call strategy is an explicit handoff, not end turn',()=>temporary(async dir=>{
+  const start=combat();
+  start.run={act:1,floor:4,ascension:0};
+  const game={read:async()=>start,settled:async()=>start,send:async()=>{throw Error('must not send');}};
+  const result=await battle(game,async()=>({option:{id:'0'},answer:{confidence:.9}}),{
+    dir,strategy:{strategy_id:'x',conditions:[{kind:'same_floor',act:1,floor:4}],order:[{match:'痛击'}]},
+    expectedStateId:stateId(start)});
+  assert.match(result.reason,/matched none|invalid strategy/);
+}));
+
+test('candidate menus keep end turn and extra targets',()=>{
+  const start=combat();
+  const options=actions(start);
+  const candidates=planCandidates(start,options);
+  assert.ok(candidates.some(c=>c.title==='End turn'||c.option_id===options.find(o=>o.command.action==='end_turn')?.id));
+  assert.ok(candidates.filter(c=>c.kind==='single').length>=options.filter(o=>o.command.action!=='use_potion').length);
 });

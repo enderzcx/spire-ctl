@@ -1,15 +1,17 @@
-// Short deterministic prefixes as candidates.
-//
-// Steps are projected sequentially from modeled effects. A later step that
-// would require a draw, random outcome, status-modified damage, or a dead
-// target is not a plan; the prefix stops before it.
-import {incomingAttacks,optionEffect,projectPrefix} from './combat.mjs';
+// Candidates: every legal single action+target, plus a bounded set of proven prefixes.
+import {incomingAttacks,projectPlay,projectPrefix} from './combat.mjs';
 import {describeCard} from './effects.mjs';
 
-const MAX_STEPS=2;
+const MAX_PREFIX=2;
+const MAX_PREFIX_LINES=2;
 
 function labelOf(option){
+  if(option?.command?.action==='end_turn')return 'End turn';
   return String(option?.label??'').split(':')[0].slice(0,18)||'card';
+}
+
+function optionKey(option){
+  return `${option.command?.action}:${option.command?.card_index??''}:${option.command?.target??''}`;
 }
 
 function compactStep(state,step,store){
@@ -24,133 +26,133 @@ function compactStep(state,step,store){
     block:step.block,
     energy:step.energy,
     kills:step.kills,
-    expect:step.expect
+    expect:step.expect??null
   };
 }
 
-export function planCandidates(state,options,{store={},energy=null,limit=4}={}){
-  const budget=Number.isFinite(energy)?energy:Number(state.player?.energy??0);
+function singleCandidate(state,option,store){
+  const projected=option.command?.action==='play_card'?projectPlay(state,option):{known:false};
+  const card=(state.player?.hand??[]).find(entry=>entry.index===option.command?.card_index)??{};
   const attacks=incomingAttacks(state);
-  const playable=options.filter(option=>option.command?.action==='play_card');
-  if(!playable.length)return [];
+  return {
+    id:null,
+    kind:'single',
+    title:labelOf(option),
+    option_id:option.id,
+    steps:[{
+      option_id:option.id,
+      card_index:option.command?.card_index??null,
+      card:describeCard(card,store),
+      target_entity:option.command?.target??null,
+      target_combat_id:projected.known?projected.effect?.target?.combat_id??null:null,
+      damage:projected.known?projected.effect.total:null,
+      block:projected.known?projected.effect.block:null,
+      energy:projected.known?projected.effect.cost:null,
+      kills:projected.known?projected.kills:0,
+      expect:projected.known?projected.expect:null
+    }],
+    energy:projected.known?projected.effect.cost:null,
+    damage:projected.known?(projected.effect.total??0):null,
+    block:projected.known?(projected.effect.block??0):null,
+    kills:projected.known?projected.kills:0,
+    verified:Boolean(projected.known),
+    incoming:attacks.known?attacks.total:null,
+    unblocked:projected.known?projected.unblocked:null,
+    survives:projected.known?projected.survives:null
+  };
+}
 
+export function planCandidates(state,options,{store={},maxLength=2,prefixLines=MAX_PREFIX_LINES}={}){
+  const attacks=incomingAttacks(state);
+  const menu=options.filter(option=>option.command?.action!=='use_potion');
+  if(!menu.length)return [];
   const candidates=[];
   const seen=new Set();
-  const add=(title,optionList)=>{
-    const projected=projectPrefix(state,optionList);
-    if(!projected.known||!projected.steps.length)return;
-    if(projected.energy>budget)return;
-    if(projected.steps.some(step=>!step.prefixSafe)&&projected.steps.length>1)return;
-    const key=projected.steps.map(step=>step.card_index).join('-');
-    if(seen.has(key))return;
-    seen.add(key);
-    candidates.push({
-      id:`c${candidates.length}`,
-      title,
-      steps:projected.steps,
-      energy:projected.energy,
-      damage:projected.damage,
-      block:projected.block,
-      kills:projected.kills,
-      single_target:projected.steps.length===1,
-      verified:true,
-      incoming:projected.incoming,
-      unblocked:projected.unblocked,
-      survives:projected.survives
-    });
-  };
-
-  const modeled=playable.filter(option=>optionEffect(option,state).known);
-  const prefixable=modeled.filter(option=>optionEffect(option,state).prefixSafe);
-  const lethal=prefixable.filter(option=>projectPrefix(state,[option]).kills>0)
-    .sort((a,b)=>optionEffect(a,state).cost-optionEffect(b,state).cost);
-  const attacksKnown=prefixable.filter(option=>optionEffect(option,state).total&&!lethal.includes(option));
-  const blocks=prefixable.filter(option=>optionEffect(option,state).block&&!optionEffect(option,state).total)
-    .sort((a,b)=>(optionEffect(b,state).block??0)-(optionEffect(a,state).block??0));
-
-  if(lethal.length)add(`Kill with ${labelOf(lethal[0])}`,[lethal[0]]);
-  if(attacksKnown.length)add(`Play ${labelOf(attacksKnown[0])}`,[attacksKnown[0]]);
-  if(blocks.length)add(`Block ${optionEffect(blocks[0],state).block} with ${labelOf(blocks[0])}`,[blocks[0]]);
-  for(const option of modeled){
-    if(prefixable.includes(option))continue;
-    add(`Play ${labelOf(option)}`,[option]);
-  }
-
-  const pool=[...lethal,...attacksKnown];
-  if(pool.length>=2){
-    const first=pool[0];
-    const second=pool.find(option=>option!==first&&option.command.card_index!==first.command.card_index);
-    if(second)add(`${labelOf(first)} then ${labelOf(second)}`,[first,second].slice(0,MAX_STEPS));
-  }else if(pool.length&&blocks.length&&blocks[0].command.card_index!==pool[0].command.card_index){
-    add(`${labelOf(pool[0])} then ${labelOf(blocks[0])}`,[pool[0],blocks[0]].slice(0,MAX_STEPS));
-  }
-
-  for(const option of playable){
-    const key=String(option.command?.card_index);
+  for(const option of menu){
+    const key=optionKey(option);
     if(seen.has(key))continue;
     seen.add(key);
-    const effect=optionEffect(option,state);
-    candidates.push({
-      id:`c${candidates.length}`,
-      title:`Play ${labelOf(option)}`,
-      steps:[{
-        option,option_id:option.id,card_index:option.command.card_index,
-        target_entity:effect.target?.entity_id??null,target_combat_id:effect.target?.combat_id??null,
-        damage:effect.total,block:effect.block,energy:effect.cost,kills:0,expect:null,prefixSafe:false
-      }],
-      energy:effect.cost,damage:effect.total??0,block:effect.block??0,kills:0,
-      single_target:true,verified:false,incoming:attacks.known?attacks.total:null,
-      unblocked:null,survives:null
-    });
+    const candidate=singleCandidate(state,option,store);
+    candidate.id=`c${candidates.length}`;
+    candidates.push(candidate);
   }
 
-  return candidates.slice(0,limit).map(candidate=>({
+  const playable=menu.filter(option=>option.command?.action==='play_card');
+  if(maxLength>=2&&playable.length>=2){
+    let added=0;
+    for(let i=0;i<playable.length&&added<prefixLines;i++){
+      for(let j=0;j<playable.length&&added<prefixLines;j++){
+        if(i===j)continue;
+        if(playable[i].command.card_index===playable[j].command.card_index)continue;
+        const projected=projectPrefix(state,[playable[i],playable[j]].slice(0,MAX_PREFIX));
+        if(!projected.known||projected.steps.length<2)continue;
+        const key=projected.steps.map(step=>`${step.card_index}:${step.target_combat_id??''}`).join('>');
+        if(seen.has(key))continue;
+        seen.add(key);
+        candidates.push({
+          id:`c${candidates.length}`,
+          kind:'prefix',
+          title:`${labelOf(playable[i])} then ${labelOf(playable[j])}`,
+          steps:projected.steps.map(step=>compactStep(state,step,store)),
+          energy:projected.energy,
+          damage:projected.damage,
+          block:projected.block,
+          kills:projected.kills,
+          verified:true,
+          incoming:projected.incoming,
+          unblocked:projected.unblocked,
+          survives:projected.survives
+        });
+        added+=1;
+      }
+    }
+  }
+
+  return candidates.map(candidate=>({
     ...candidate,
-    steps:candidate.steps.map(step=>compactStep(state,step,store)),
     incoming:candidate.incoming??(attacks.known?attacks.total:null)
   }));
 }
 
 export function candidateToPlan(stateId,candidate){
-  if(!candidate?.steps?.length)return null;
+  if(!candidate?.steps?.length||!candidate.steps.every(step=>step.expect))return null;
   return {
     state_id:stateId,
     steps:candidate.steps.map(step=>{
-      const out={card_index:step.card_index,expect:step.expect??{}};
+      const out={card_index:step.card_index,expect:step.expect};
       if(Number.isInteger(step.target_combat_id))out.target_combat_id=step.target_combat_id;
       return out;
     })
   };
 }
 
-export function chooseCandidate(candidates,evaluation={},strategy=null){
-  if(!candidates.length)return null;
+export function validateCandidate(candidates,choice,strategy=null){
+  if(!candidates.length||choice==null)return {candidate:null,why:'no usable model choice'};
+  const picked=candidates.find(candidate=>candidate.id===choice);
+  if(!picked)return {candidate:null,why:'choice is not an offered candidate'};
   const lethalTurn=candidates.some(candidate=>candidate.survives===false);
-  const eligible=lethalTurn?candidates.filter(candidate=>candidate.survives===true):candidates;
-  if(!eligible.length)return {candidate:null,why:'every line dies to the displayed attack'};
+  if(lethalTurn&&picked.survives===false)return {candidate:null,why:'choice dies to the displayed attack'};
   if(strategy?.order?.length){
-    const constrained=eligible.filter(candidate=>strategy.order.some(preference=>{
-      const pattern=String(preference.match??'');
-      return pattern&&candidate.steps.some(step=>String(step.card?.name??'').includes(pattern)
-        ||JSON.stringify(step.card?.effect??'').includes(pattern)
-        ||JSON.stringify(step.card?.original_text??'').includes(pattern));
-    }));
-    if(constrained.length){
-      const preferred=constrained.find(candidate=>candidate.id===evaluation.choice);
-      if(preferred)return {candidate:preferred,why:'model choice inside strategy'};
-      return {candidate:constrained[0],why:`strategy preference ${strategy.order[0].match}`};
-    }
+    const patternHits=preference=>picked.steps.some(step=>
+      String(step.card?.name??'').includes(preference)
+      ||String(step.card?.effect??'').includes(preference)
+      ||String(step.card?.original_text??'').includes(preference)
+      ||(picked.title??'').includes(preference));
+    const endTurn=picked.steps.length===1&&!picked.steps[0].card_index&&picked.title==='End turn';
+    const matches=strategy.order.some(preference=>patternHits(String(preference.match??'')));
+    if(!matches&&!endTurn)return {candidate:null,why:'choice contradicts strategy'};
   }
-  const preferred=eligible.find(candidate=>candidate.id===evaluation.choice);
-  if(preferred)return {candidate:preferred,why:'model choice'};
-  return {candidate:null,why:'no usable model choice'};
+  return {candidate:picked,why:'model choice'};
+}
+
+export function chooseCandidate(candidates,evaluation={},strategy=null){
+  return validateCandidate(candidates,evaluation.choice,strategy);
 }
 
 export const CANDIDATE_INSTRUCTIONS=[
   'Pick the best candidate line for this Slay the Spire 2 turn.',
-  'Each candidate lists its ordered cards, energy cost, computed damage and block, kills, and whether the program already proved it survives the displayed incoming attack.',
-  'Those numbers are computed and exact; do not recalculate or estimate them.',
-  'Prefer a line that kills a living enemy. Prefer surviving the displayed attack over taking it.',
+  'Single-action candidates include every legal card, target and end turn. Prefix candidates are only listed when the program proved both steps.',
+  'Numbers marked verified are exact; unverified candidates have unknown later effects and must not be treated as calculated facts.',
   'If a strategy field is present, follow it while it applies. Do not pick a line that contradicts it.',
   'End turn is a real alternative when it is listed; do not assume a card must be played.'
 ].join(' ');

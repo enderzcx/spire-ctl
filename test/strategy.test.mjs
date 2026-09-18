@@ -88,7 +88,7 @@ test('the battle loop records a handover and blocks the second ask on that state
     answer:{confidence:.3,stable:true,second_confidence:.31},usage:{input_tokens:5}};};
   try{
     const first=await battle(game,decide,{dir});
-    assert.equal(first.reason,'low_confidence');
+    assert.match(first.reason,/low_confidence/);
     const second=await battle(game,decide,{dir});
     assert.equal(second.reason,'repeated_state','the same state is not asked twice');
     assert.equal(calls,1,'the second invocation does not ask again');
@@ -123,21 +123,18 @@ test('an agreed strategy carries the loop through a safety guard, not past a new
     assert.equal(blocked.reason,'Low HP: reassess survival and potions');
     assert.equal(route(lowHp).strategic,false);
 
-    // With an agreed strategy whose conditions hold, the loop continues locally.
-    await saveStrategy(dir,{strategy_id:'low-hp-1',created_state_id:'x',reason:'keep chipping',
-      run_identity:JSON.stringify({id:'run-s',character:null}),
-      conditions:[{kind:'same_floor',act:1,floor:11},{kind:'hp_at_least',value:5}],
-      expires_on:[{kind:'enemy_count_at_most',value:0}],
-      order:[{match:'打击',why:'chip'}]});
+    const {stateId}=await import('../src/game.mjs');
     let sends=0,modelCalls=0;
     const carried={read:async()=>sends?after:lowHp,settled:async()=>sends?after:lowHp,
       send:async()=>{sends++;return{status:'ok'};}};
-    const result=await battle(carried,async()=>{modelCalls++;return{option:{id:'0'},answer:{confidence:.9}};},{dir,max:2});
-    assert.equal(sends,1,'the strategy issued the play');
-    assert.equal(modelCalls,0,'no model round trip was needed');
+    const result=await battle(carried,async(_s,offered)=>{modelCalls++;return{option:offered[0],answer:{confidence:.9,choice:offered[0].id}};},
+      {dir,max:2,strategy:{strategy_id:'low-hp-1',reason:'keep chipping',
+        conditions:[{kind:'same_floor',act:1,floor:11},{kind:'hp_at_least',value:5}],
+        expires_on:[{kind:'enemy_count_at_most',value:0}],
+        order:[{match:'打击',why:'chip'}]},expectedStateId:stateId(lowHp)});
+    assert.equal(sends,1,'Jev still chooses among constrained options');
+    assert.equal(modelCalls,1,'strategy does not stealth-pick');
     assert.equal(result.reason,'left_combat');
-    const rows=(await readFile(join(dir,'events.jsonl'),'utf8')).trim().split('\n').map(l=>JSON.parse(l));
-    assert.equal(rows.find(row=>row.event==='local_decision').kind,'strategy');
 
     // A strategic route still returns: an unrecognized intent is a new decision.
     const unknown={...lowHp,player:{...lowHp.player,hp:60},

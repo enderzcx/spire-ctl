@@ -86,7 +86,7 @@ test('low confidence over a real choice returns a planner packet',()=>temporary(
   x.player.hand=[{...x.player.hand[0],index:0},{...x.player.hand[0],index:1,id:'STRIKE2'}];
   const game={settled:async()=>x,send:async()=>sent++};
   const r=await battle(game,async()=>({option:actions(x)[0],answer:{confidence:.2},usage:{input_tokens:10}}),{dir});
-  assert.equal(r.reason,'low_confidence');assert.equal(sent,0);
+  assert.match(r.reason,/low_confidence/);assert.equal(sent,0);
 }));
 test('battle stops on rewards instead of entering the next room',()=>temporary(async dir=>{
   const x=s(),after={state_type:'rewards',rewards:{items:[],can_proceed:true},run:x.run,player:x.player};let sent=0,reads=0;

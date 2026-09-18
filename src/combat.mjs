@@ -1,17 +1,20 @@
-// Canonical combat facts and a small whitelist of modeled effects.
-//
-// This is not a game simulator. Damage, block, energy and death are applied
-// only for combinations the program can bound from the live advertised text.
-// Everything else stays unknown and must not be invented as an exact fact.
+// Canonical combat facts. Exact projections exist only for a small whitelist
+// of complete card texts with known numeric costs and no unmodeled modifiers.
+// A numeric regex hit is not a complete effect.
 
 const isNum=value=>Number.isFinite(value);
 export const livingEnemies=state=>(state?.battle?.enemies??[]).filter(enemy=>enemy.hp>0);
-
-const TIMES={两:2,二:2,三:3,四:4,五:5,twice:2,thrice:3};
-const UNBOUNDED=/随机|random|加入.*手牌|加入.*抽牌堆|add .*to (your )?hand|lose \d+ (hp|life)|失去.*生命/i;
+const TIMES={两:2,二:2,三:3,四:4,五:5};
 
 export function intentDamage(intent){
   const label=String(intent?.label??'').trim();
+  const isAttack=String(intent?.type??'').includes('Attack')||String(intent?.title??'').includes('攻');
+  if(isAttack){
+    if(label==='')return null;
+    const match=label.match(/^(\d+)(?:\s*[x×]\s*(\d+))?$/);
+    if(!match)return null;
+    return Number(match[1])*Number(match[2]??1);
+  }
   if(label==='')return 0;
   const match=label.match(/^(\d+)(?:\s*[x×]\s*(\d+))?$/);
   if(!match)return null;
@@ -40,7 +43,6 @@ export function incomingDamage(state){
   return attacks.known?attacks.total:null;
 }
 
-// Block absorbs first, then HP. An 8 HP enemy with 3 block is not killed by 6.
 export function applyDamage(hp,block,damage){
   const hit=Math.max(0,Number(damage)||0);
   const currentHp=Math.max(0,Number(hp)||0);
@@ -50,80 +52,116 @@ export function applyDamage(hp,block,damage){
   return {hp:nextHp,block:Math.max(0,currentBlock-hit),killed:currentHp>0&&nextHp<=0};
 }
 
-export function parseEffect(text){
-  const raw=String(text??'');
-  const effect={known:false,damage:null,hits:1,block:null,draw:0,exhaust:false,random:false,
-    selfDamage:false,allEnemies:false,vulnerable:null,weak:null,unbounded:false,original:raw};
-  if(!raw)return effect;
-  effect.random=UNBOUNDED.test(raw)||/随机/.test(raw);
-  effect.selfDamage=/失去.*生命|lose \s*\d+\s*(hp|life)/i.test(raw);
-  effect.exhaust=/消耗|exhaust/i.test(raw);
-  effect.allEnemies=/所有敌人|全部敌人|all enemies/i.test(raw);
-  const draw=raw.match(/抽\s*(\d+)\s*张牌|draw\s+(\d+)/i);
-  if(draw)effect.draw=Number(draw[1]??draw[2]);
-  const vulnerable=raw.match(/(\d+)\s*层易伤|apply\s+(\d+)\s+vulnerable/i);
-  if(vulnerable)effect.vulnerable=Number(vulnerable[1]??vulnerable[2]);
-  const weak=raw.match(/(\d+)\s*层虚弱|apply\s+(\d+)\s+weak/i);
-  if(weak)effect.weak=Number(weak[1]??weak[2]);
-  const block=raw.match(/(\d+)\s*点格挡|gain\s+(\d+)\s+block/i);
-  if(block)effect.block=Number(block[1]??block[2]);
-  const damage=raw.match(/(\d+)\s*点伤害(?:\s*(\d+)\s*次|\s*[x×]\s*(\d+)|(两|二|三|四|五)次)?/i)
-    ??raw.match(/deal\s+(\d+)\s+damage(?:\s+(\d+)\s+times|\s+([x×]\s*\d+)|(\s+twice|\s+thrice))?/i);
-  if(damage){
-    effect.damage=Number(damage[1]);
-    const word=String(damage[4]??'').trim().toLowerCase();
-    const times=Number(damage[2]??damage[3]?.replace?.(/[x×]\s*/,'')??TIMES[word]??TIMES[word.replace(' ','')]);
-    if(isNum(times)&&times>0)effect.hits=times;
-    else if(/twice/i.test(String(damage[4]??'')))effect.hits=2;
-    else if(/thrice/i.test(String(damage[4]??'')))effect.hits=3;
+export function parseCost(raw){
+  if(raw==null||raw==='')return {known:false,value:null,reason:'missing cost'};
+  const text=String(raw).trim();
+  if(!/^\d+$/.test(text))return {known:false,value:null,reason:'unsupported cost'};
+  return {known:true,value:Number(text)};
+}
+
+function effectText(text){
+  return String(text??'')
+    .replace(/\s*->\s*.*$/,'')
+    .replace(/\(\s*energy\s+[^)]+\)/ig,'')
+    .replace(/^[^:]+:\s*/,'')
+    .replace(/[。.\s]+$/u,'')
+    .trim();
+}
+
+// Exact templates only. Leftover clauses, conditionals and triggers are unknown.
+export function parseCompleteEffect(text){
+  const body=effectText(text);
+  const unknown={known:false,complete:false,damage:null,hits:1,block:null,allEnemies:false,original:String(text??'')};
+  if(!body)return unknown;
+  let match=body.match(/^造成(\d+)点伤害(?:(\d+)次|(两|二|三|四|五)次)?(?:对(?:所有|全部)敌人)?$/);
+  if(match){
+    const hits=match[2]?Number(match[2]):(TIMES[match[3]]??1);
+    return {known:true,complete:true,damage:Number(match[1]),hits,block:null,
+      allEnemies:/所有敌人|全部敌人/.test(body),original:String(text??'')};
   }
-  effect.unbounded=effect.random||effect.selfDamage||/加入.*手牌|加入.*抽牌堆|add .*discard|add .*draw/i.test(raw);
-  effect.known=isNum(effect.damage)||isNum(effect.block);
-  return effect;
+  match=body.match(/^deal\s+(\d+)\s+damage(?:\s+(\d+)\s+times|\s+twice)?(?:\s+to\s+all\s+enemies)?$/i);
+  if(match){
+    const hits=match[2]?Number(match[2]):(/twice/i.test(body)?2:1);
+    return {known:true,complete:true,damage:Number(match[1]),hits,block:null,
+      allEnemies:/all enemies/i.test(body),original:String(text??'')};
+  }
+  match=body.match(/^获得(\d+)点格挡$/);
+  if(match)return {known:true,complete:true,damage:null,hits:1,block:Number(match[1]),allEnemies:false,original:String(text??'')};
+  match=body.match(/^gain\s+(\d+)\s+block$/i);
+  if(match)return {known:true,complete:true,damage:null,hits:1,block:Number(match[1]),allEnemies:false,original:String(text??'')};
+  return unknown;
+}
+
+export function parseEffect(text){
+  const complete=parseCompleteEffect(text);
+  if(complete.complete)return {...complete,draw:0,exhaust:false,random:false,selfDamage:false,
+    unbounded:false,vulnerable:null,weak:null};
+  const raw=String(text??'');
+  return {known:false,complete:false,damage:null,hits:1,block:null,draw:0,exhaust:/消耗|exhaust/i.test(raw),
+    random:/随机|random/i.test(raw),selfDamage:/失去.*生命|lose \s*\d+\s*(hp|life)/i.test(raw),
+    allEnemies:/所有敌人|全部敌人|all enemies/i.test(raw),vulnerable:null,weak:null,
+    unbounded:true,original:raw};
 }
 
 export function optionDamage(option){
-  const effect=parseEffect(option?.label);
-  if(!isNum(effect.damage))return null;
+  const effect=parseCompleteEffect(option?.label);
+  if(!effect.complete||!isNum(effect.damage))return null;
   return effect.damage*(effect.hits||1);
 }
 
 export function optionBlock(option){
-  const effect=parseEffect(option?.label);
-  return isNum(effect.block)?effect.block:0;
+  const effect=parseCompleteEffect(option?.label);
+  return effect.complete&&isNum(effect.block)?effect.block:0;
 }
 
 export function optionTarget(option,state){
   const living=livingEnemies(state);
   const entityId=option?.command?.target;
   if(entityId)return living.find(enemy=>enemy.entity_id===entityId)??null;
-  if(!Number.isFinite(optionDamage(option))&&!parseEffect(option?.label).allEnemies)return null;
+  if(!Number.isFinite(optionDamage(option))&&!parseCompleteEffect(option?.label).allEnemies)return null;
   return living.length===1?living[0]:null;
 }
 
 export function cardCost(state,option){
   const index=option?.command?.card_index;
   const card=(state.player?.hand??[]).find(entry=>entry.index===index);
-  const cost=Number(card?.cost);
-  return isNum(cost)?cost:0;
+  return parseCost(card?.cost);
+}
+
+export function combatContext(state){
+  const playerStatus=state.player?.status??[];
+  const relics=state.player?.relics??[];
+  const enemyStatus=(state.battle?.enemies??[]).flatMap(enemy=>enemy.status??[]);
+  const unknownPlayer=playerStatus.filter(Boolean);
+  const unknownRelics=relics.filter(Boolean);
+  const unknownEnemy=enemyStatus.filter(Boolean);
+  return {
+    known:!unknownPlayer.length&&!unknownRelics.length&&!unknownEnemy.length,
+    unknownPlayer,unknownRelics,unknownEnemy
+  };
 }
 
 export function optionEffect(option,state){
-  const fromLabel=parseEffect(option?.label);
+  const parsed=parseCompleteEffect(option?.label);
   const card=(state.player?.hand??[]).find(entry=>entry.index===option?.command?.card_index);
-  const fromCard=parseEffect(card?.description);
-  const effect=fromLabel.known?fromLabel:fromCard;
+  const fromCard=parseCompleteEffect(card?.description);
+  const effect=parsed.complete?parsed:fromCard;
+  const cost=cardCost(state,option);
   const target=optionTarget(option,state);
-  const total=isNum(effect.damage)?effect.damage*(effect.hits||1):null;
-  const modeled=effect.known&&!effect.unbounded&&!effect.random
-    &&(total===null||target||effect.allEnemies||option?.command?.action!=='play_card');
+  const total=effect.complete&&isNum(effect.damage)?effect.damage*(effect.hits||1):null;
+  const context=combatContext(state);
+  const modeled=Boolean(effect.complete&&cost.known&&context.known
+    &&(total===null||target||effect.allEnemies||option?.command?.action!=='play_card'));
   return {
     ...effect,
+    known:modeled,
     total,
-    cost:cardCost(state,option),
+    cost:cost.known?cost.value:null,
+    costKnown:cost.known,
+    contextKnown:context.known,
     target,
     modeled,
-    prefixSafe:Boolean(modeled&&!effect.draw&&!effect.exhaust&&effect.vulnerable==null&&effect.weak==null)
+    prefixSafe:modeled
   };
 }
 
@@ -133,6 +171,8 @@ function cloneCombat(state){
     run:state.run,
     player:{
       ...(state.player??{}),
+      status:[...(state.player?.status??[])],
+      relics:[...(state.player?.relics??[])],
       hand:(state.player?.hand??[]).map(card=>({...card})),
       block:Number(state.player?.block??0),
       hp:Number(state.player?.hp??0),
@@ -151,13 +191,13 @@ function enemiesProjection(state){
   return (state.battle?.enemies??[]).map(({entity_id,...enemy})=>enemy);
 }
 
-// Apply one advertised play to a cloned combat snapshot. Unknown mechanics
-// return {known:false} instead of a fabricated next state.
 export function projectPlay(state,option){
-  const effect=optionEffect(option,state);
   if(option?.command?.action!=='play_card')return {known:false,reason:'not a card play'};
-  if(!effect.known)return {known:false,reason:'unmodeled effect',effect};
-  if(effect.unbounded||effect.random)return {known:false,reason:'unbounded effect',effect};
+  const context=combatContext(state);
+  if(!context.known)return {known:false,reason:'unmodeled active modifier'};
+  const effect=optionEffect(option,state);
+  if(!effect.costKnown)return {known:false,reason:'unsupported cost',effect};
+  if(!effect.complete||!effect.modeled)return {known:false,reason:'unmodeled effect',effect};
   if(isNum(effect.total)&&!effect.allEnemies&&!effect.target)
     return {known:false,reason:'unknown target',effect};
   const next=cloneCombat(state);
@@ -182,8 +222,7 @@ export function projectPlay(state,option){
   const index=next.player.hand.findIndex(card=>card.index===option.command.card_index);
   if(index<0)return {known:false,reason:'card not in hand',effect};
   next.player.hand.splice(index,1);
-  if(effect.exhaust)next.player.exhaust_pile_count+=1;
-  else next.player.discard_pile_count+=1;
+  next.player.discard_pile_count+=1;
   const attacks=incomingAttacks(next);
   const unblocked=attacks.known?Math.max(0,attacks.total-next.player.block):null;
   const expect={energy:next.player.energy};
@@ -191,18 +230,14 @@ export function projectPlay(state,option){
   if(next.player.hp!==Number(state.player?.hp??0))expect.hp=next.player.hp;
   if(JSON.stringify(enemiesProjection(next))!==JSON.stringify(enemiesProjection(state)))
     expect.enemies=enemiesProjection(next);
-  if(effect.exhaust){
-    expect.exhaust=next.player.exhaust_pile_count;
-    expect.discard=Number(state.player?.discard_pile_count??0);
-  }
   return {
     known:true,
     effect,
     next,
     expect,
     kills,
-    prefixSafe:effect.prefixSafe&&!effect.draw,
-    boundary:effect.draw?'draw':null,
+    prefixSafe:true,
+    boundary:null,
     incoming:attacks.known?attacks.total:null,
     unblocked,
     survives:unblocked===null?null:unblocked<next.player.hp
@@ -215,8 +250,6 @@ export function projectPrefix(state,options){
   for(const option of options){
     const projected=projectPlay(current,option);
     if(!projected.known)return {known:false,reason:projected.reason,steps};
-    if(steps.length&&!projected.prefixSafe)return {known:false,reason:'later step is not deterministic',steps};
-    if(projected.boundary==='draw'&&options.length>1)return {known:false,reason:'draw boundary',steps};
     steps.push({
       option,
       option_id:option.id,
@@ -228,8 +261,8 @@ export function projectPrefix(state,options){
       energy:projected.effect.cost,
       kills:projected.kills,
       expect:projected.expect,
-      prefixSafe:projected.prefixSafe,
-      boundary:projected.boundary
+      prefixSafe:true,
+      boundary:null
     });
     current=projected.next;
   }

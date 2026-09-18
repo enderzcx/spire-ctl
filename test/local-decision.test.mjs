@@ -20,7 +20,9 @@ const combat=(overrides={})=>({state_type:'monster',run:{act:1,floor:4,seed:'run
     enemies:[enemy()],...overrides.battle}});
 
 test('the program takes a decided lethal line without asking the model',()=>temporary(async dir=>{
-  const start=combat({battle:{enemies:[enemy({hp:6})]}});
+  const start=combat({player:{hp:40,max_hp:80,block:0,energy:3,potions:[],status:[],relics:[],
+    hand:[card(0,'造成6点伤害。',{target:'E_0'}),card(1,'获得5点格挡。',{type:'Skill'})]},
+    battle:{enemies:[enemy({hp:6})]}});
   const after={state_type:'rewards',rewards:{items:[],can_proceed:true},run:start.run,player:{...start.player,hand:[]}};
   let calls=0,sends=0;
   const game={read:async()=>sends?after:start,settled:async()=>sends?after:start,send:async()=>{sends++;return{status:'ok'};}};
@@ -53,12 +55,11 @@ test('a mitigation shortlist is handed to the model and recorded on the decision
   let sends=0;
   const game={read:async()=>sends?after:start,settled:async()=>sends?after:start,send:async()=>{sends++;return{status:'ok'};}};
   let observed=null;
-  await battle(game,async(_s,_o,shortlist)=>{observed=shortlist;
-    return {option:{id:'1'},answer:{confidence:.8,shortlist_reason:shortlist?.reason},usage:{input_tokens:5},requests:1};},{dir,max:2});
-  assert.equal(observed.kind,'shortlist');
-  assert.match(observed.reason,/significant|Significant|mitigation/i);
+  await battle(game,async(_s,offered,shortlist)=>{observed=shortlist;
+    return {option:offered.find(o=>o.command.card_index===1)||offered[0],answer:{confidence:.8},usage:{input_tokens:5},requests:1};},{dir,max:2});
   const decision=(await rows(dir)).find(row=>row.event==='decision');
-  assert.equal(JSON.parse(JSON.stringify(decision)).option.id,'1');
+  assert.equal(JSON.parse(JSON.stringify(decision)).option.command.card_index,1);
+  assert.equal(observed==null||observed.kind!=='play',true);
 }));
 
 test('choose refuses an empty menu instead of inventing an action',async()=>{

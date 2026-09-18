@@ -70,3 +70,17 @@ test('killing the sole attacker is a surviving line even with no block',()=>{
   assert.equal(projected.survives,true);
   assert.equal(incomingAttacks(projected.next).total,0);
 });
+
+test('unknown player modifiers, X cost and blank attack intents stay unknown',()=>{
+  const s=state({player:{energy:3,hand:[card(0,'造成6点伤害。',{id:'STRIKE'})]},
+    battle:{enemies:[enemy({hp:8,block:3})]}});
+  const play=option(0,'打击: 造成6点伤害。',{target:'E_0'});
+  assert.equal(projectPlay(s,play).known,true);
+  const cursed={...s,player:{...s.player,status:[{id:'UNMODELED_TRIGGER',amount:1,description:'After playing a card, lose 2 HP.'}]}};
+  assert.equal(projectPlay(cursed,play).known,false);
+  const xCost=state({player:{energy:3,hand:[card(0,'造成6点伤害。',{id:'STRIKE',cost:'X'})]},
+    battle:{enemies:[enemy({hp:8,block:3})]}});
+  assert.equal(projectPlay(xCost,play).known,false);
+  const blank=state({battle:{enemies:[enemy({intents:[{type:'Attack',label:''}]})]}});
+  assert.equal(incomingAttacks(blank).known,false);
+});

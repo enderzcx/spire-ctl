@@ -2,7 +2,8 @@ import {resolve,join} from 'node:path';
 import {homedir} from 'node:os';
 import {access,rm} from 'node:fs/promises';
 import {createGame,stateId} from './game.mjs';
-import {envelope,withLock,execute,battle,advance} from './runner.mjs';
+import {envelope,withLock,execute} from './dispatch.mjs';
+import {battle,advance} from './runner.mjs';
 import {runPlan,projection} from './plan.mjs';
 import {choose} from './jev.mjs';
 import {bindStrategy,saveStrategy,loadStrategy} from './strategy.mjs';
@@ -28,7 +29,7 @@ export function createController({endpoint=process.env.SPIRE_API_URL??'http://12
     act:(expected,id,{signal,source='caller'}={})=>mutate(signal,(g,opts)=>execute(g,expected,id,{...opts,source})),
     // The fast-model seam is injectable so the shortlist hand-off can be tested
     // without a provider; production keeps the real adapter.
-    battle:(max=60,{signal}={})=>mutate(signal,(g,opts)=>battle(g,(s,o,shortlist,extra={})=>decide(s,o,{apiKey,signal,shortlist,...extra}),{...opts,max})),
+    battle:(max=60,{signal,strategy,expectedStateId}={})=>mutate(signal,(g,opts)=>battle(g,(s,o,shortlist,extra={})=>decide(s,o,{apiKey,signal,shortlist,...extra}),{...opts,max,strategy,expectedStateId})),
     plan:(plan,{signal}={})=>mutate(signal,(g,opts)=>runPlan(g,plan,opts)),
     // Mechanical progress only: free claims, fixed buttons, then stop.
     advance:(max=20,{signal}={})=>mutate(signal,(g,opts)=>advance(g,{...opts,max})),

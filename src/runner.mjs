@@ -1,91 +1,54 @@
-import {mkdir,readFile,writeFile,appendFile,rm} from 'node:fs/promises';
-import {join} from 'node:path';
-import {actions,inCombat,route,stateId,incomingDamage} from './game.mjs';
-import {loadStrategy,seenHandoff,noteHandoff,guardSignature,noteGuard} from './strategy.mjs';
+import {actions,inCombat,stateId} from './game.mjs';
+import {envelope,withLock,recorder,PROTOCOL,execute} from './dispatch.mjs';
+import {loadStrategy,seenHandoff,noteHandoff,guardSignature,noteGuard,strategyApplies} from './strategy.mjs';
 import {mechanicalPlan} from './mechanical.mjs';
 import {decideCombat} from './decision.mjs';
 import {runPlan} from './plan.mjs';
 
-export function envelope(state){
-  const options=actions(state),incoming=inCombat(state)?incomingDamage(state):null;
-  const attackGap=incoming===null?null:Math.max(0,incoming-(state.player?.block??0));
-  return {state_id:stateId(state),route:route(state,options),options,state,
-    tactical_facts:inCombat(state)?{displayed_attack_damage:incoming,block_needed_for_displayed_attacks:attackGap,
-      note:'Current displayed attacks only; excludes future card effects and end-turn triggers.'}:undefined};
-}
+export {envelope,withLock,recorder,PROTOCOL,execute};
 
-export async function withLock(dir,fn){
-  await mkdir(dir,{recursive:true});const lock=join(dir,'execution.lock');
-  try{await mkdir(lock);}catch(e){if(e.code==='EEXIST')throw Error('Another controller owns execution; do not run two agents at once');throw e;}
-  try{return await fn();}finally{await rm(lock,{recursive:true});}
-}
-
-export const PROTOCOL=3;
-export function recorder(dir){return async data=>{await mkdir(dir,{recursive:true});await appendFile(join(dir,'events.jsonl'),JSON.stringify({at:new Date().toISOString(),protocol:PROTOCOL,...data})+'\n');};}
-
-export function isRejectedReceipt(error){
-  return /Game rejected request:/.test(error?.message??'');
-}
-
-async function persistHalt(control,payload){
-  await writeFile(join(control,'HALTED'),JSON.stringify(payload));
-}
-
-export async function execute(game,expectedId,optionId,{dir,control=dir,record=recorder(dir),source='planner'}={}){
-  try{await readFile(join(control,'HALTED'));throw Error('Previous action outcome unknown: inspect game and clear the halt explicitly');}catch(e){if(e.code!=='ENOENT')throw e;}
-  const before=await game.read();
-  if(stateId(before)!==expectedId)throw Error('Stale state: refresh before choosing an action');
-  const option=actions(before).find(o=>o.id===String(optionId));
-  if(!option)throw Error('Action not advertised by this state');
-  await record({event:'dispatch',source,state_id:expectedId,option,before});
-  await writeFile(join(control,'HALTED'),JSON.stringify({reason:'in_flight',expectedId,option}),{flag:'wx'});
-  const start=performance.now();
-  let receipt;
-  try{
-    receipt=await game.send(option.command);
-  }catch(e){
-    if(isRejectedReceipt(e)){
-      await rm(join(control,'HALTED'));
-      await record({event:'rejected',source,option,reason:e.message});
-      throw e;
-    }
-    await persistHalt(control,{expectedId,option,reason:e.message});
-    await record({event:'halted',source,reason:e.message});
-    throw e;
-  }
-  try{
-    const after=await game.settled(expectedId);
-    const action_ms=Math.round(performance.now()-start);
-    await record({event:'verified',source,option,receipt,after,action_ms});
-    await rm(join(control,'HALTED'));
-    return {action_ms,...envelope(after)};
-  }catch(e){
-    await persistHalt(control,{expectedId,option,reason:e.message});
-    await record({event:'halted',source,reason:e.message});
-    throw e;
-  }
-}
-
-export async function battle(game,decide,{dir,control=dir,max=60,record=recorder(dir)}={}){
+export async function battle(game,decide,{dir,control=dir,max=60,record=recorder(dir),
+  strategy=null,expectedStateId=null}={}){
   if(!Number.isInteger(max)||max<1||max>100)throw Error('max must be 1..100');
   let s=await game.settled(),tokens=0,steps=0;const room=JSON.stringify(s.run);
-  let round=s.battle?.round??null,actedThisRound=false;
-  const agreed=await loadStrategy(dir,s);
+  const openingId=stateId(s);
+  let agreed=null;
+  if(strategy){
+    if(!expectedStateId)throw Error('In-call strategy requires expectedStateId');
+    if(expectedStateId!==openingId)throw Error('Strategy expectedStateId does not match live state');
+    agreed={...strategy,in_call:true,expected_state_id:openingId};
+    const applied=strategyApplies(agreed,s,{inCall:true});
+    if(!applied.ok)return {reason:`invalid strategy: ${applied.reason}`,steps:0,...envelope(s),
+      instruction:'Return a decision, or a strategy with explicit conditions and expiry'};
+  }else{
+    agreed=await loadStrategy(dir,s);
+  }
   for(;steps<max;steps++){
     const env=envelope(s);
     if(!inCombat(s)||JSON.stringify(s.run)!==room)return {reason:'left_combat',steps,...env};
-    if(s.battle?.round!==round){round=s.battle?.round??null;actedThisRound=false;}
     if(env.route.kind==='wait')throw Error('Unexpected busy state');
     if(tokens>=100000)return {reason:'token_budget',steps,...env};
+    if(agreed){
+      const applied=strategyApplies(agreed,s,{inCall:agreed.in_call===true});
+      if(!applied.ok)agreed=null;
+    }
     const start=performance.now();
     const prior=await seenHandoff(dir,env.state_id);
-    const decision=await decideCombat({state:s,options:env.options,route:env.route,strategy:agreed,
-      ask:decide,priorHandoff:prior,actedThisRound});
-    tokens+=Number(decision.usage?.input_tokens??0);
+    let decision;
+    try{
+      decision=await decideCombat({state:s,options:env.options,route:env.route,strategy:agreed,
+        ask:decide,priorHandoff:prior,remainingSteps:max-steps});
+    }catch(error){
+      const requests=Number(error.requests??1);
+      await record({event:'ask',source:'jev',state_id:env.state_id,requests,
+        usage:error.usage??{unavailable:true},error:error.message});
+      throw error;
+    }
+    if(decision.usage&&!decision.usage.unavailable)tokens+=Number(decision.usage.input_tokens??0);
     if(decision.requests)await record({event:'ask',source:'jev',state_id:env.state_id,
       requests:decision.requests,confidence:decision.proposal?.answer?.confidence??null,
       playable_cards:env.options.filter(o=>o.command.action==='play_card').length,
-      planned:decision.kind==='execute_prefix'});
+      usage:decision.usage,planned:decision.kind==='execute_prefix'});
     if(decision.proposal)await record({event:'decision',source:'jev',state_id:env.state_id,...decision.proposal,
       playable_cards:env.options.filter(o=>o.command.action==='play_card').length,
       decision_source:decision.source});
@@ -107,6 +70,8 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
         return {reason:decision.reason,proposal:decision.proposal,steps,...env,repeat_count:noted.count,
           instruction:decision.instruction??'Return a decision, or a strategy with explicit conditions and expiry'};
       }
+      await record({event:'takeover',source:'planner',reason:decision.reason,state_id:env.state_id,
+        confidence:decision.proposal?.answer?.confidence??null});
       return {reason:decision.reason,steps,...env,instruction:decision.instruction,
         guard:decision.guard,attrition:decision.attrition,proposal:decision.proposal,
         local_evidence:decision.local_evidence};
@@ -116,17 +81,20 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
       line:decision.local.kind==='kill'?(decision.local.options??[]).map(o=>o.label):undefined});
     if(decision.kind==='execute_prefix'){
       const result=await runPlan(game,decision.plan,{dir,control,record});
+      const dispatched=result.dispatched??result.completed??decision.plan.steps.length;
+      const confirmed=result.confirmed??(result.reason==='plan_complete'?dispatched:Math.max(0,(result.completed??1)-1));
       await record({event:'cycle',source:decision.source,total_ms:Math.round(performance.now()-start),
-        prefix_steps:decision.plan.steps.length,reason:result.reason,decision_source:decision.source});
-      steps+=Math.max(0,(result.completed??1)-1);
+        prefix_steps:decision.plan.steps.length,reason:result.reason,decision_source:decision.source,
+        dispatched,confirmed});
+      steps+=Math.max(0,dispatched-1);
       if(result.reason!=='plan_complete')
-        return {reason:result.reason,steps,completed:result.completed,candidate:decision.candidate,...envelope(result.state??s)};
-      s=result.state;actedThisRound=true;continue;
+        return {reason:result.reason,steps,completed:result.completed,dispatched,confirmed,
+          candidate:decision.candidate,...envelope(result.state??s)};
+      s=result.state;continue;
     }
     const next=await execute(game,env.state_id,decision.option.id,{dir,control,record,source:decision.source});
     await record({event:'cycle',source:decision.source,total_ms:Math.round(performance.now()-start),
       action_ms:next.action_ms,decision_source:decision.source});
-    actedThisRound=decision.option?.command?.action!=='end_turn';
     s=next.state;
   }
   return {reason:'step_budget',steps,...envelope(s)};

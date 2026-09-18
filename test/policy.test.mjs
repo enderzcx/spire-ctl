@@ -6,7 +6,7 @@ const enemy=(overrides={})=>({entity_id:'E_0',combat_id:1,name:'Enemy',hp:20,max
   intents:[{type:'Attack',label:'6',title:'攻势'}],status:[],...overrides});
 const state=(overrides={})=>({state_type:'monster',run:{act:1,floor:4},
   battle:{ready_for_action:true,turn:'player',round:1,enemies:[enemy()],...overrides.battle},
-  player:{hp:40,max_hp:80,block:0,energy:3,hand:[],potions:[],...overrides.player}});
+  player:{hp:40,max_hp:80,block:0,energy:3,hand:[],potions:[],status:[],relics:[],...overrides.player}});
 const card=(index,label,overrides={})=>({id:`CARD_${index}`,...overrides,
   command:{action:'play_card',card_index:index,...overrides.command},label});
 const endTurn={id:'end',command:{action:'end_turn'},label:'End turn'};
@@ -41,8 +41,9 @@ test('option damage and block are read from the advertised label',()=>{
 });
 
 test('lethal displayed attacks are preferred over defending',()=>{
-  const s=state({battle:{enemies:[enemy({hp:6})]}});
-  const options=[card(0,'打击: 造成6点伤害。 (energy 1) -> Enemy (6 HP)'),card(1,'防御: 获得5点格挡。'),endTurn];
+  const s=state({player:{hand:[{id:'STRIKE',index:0,cost:'1',description:'造成6点伤害。',can_play:true}]},
+    battle:{enemies:[enemy({hp:6})]}});
+  const options=[card(0,'打击: 造成6点伤害。 (energy 1) -> Enemy (6 HP)',{command:{target:'E_0'}}),card(1,'防御: 获得5点格挡。'),endTurn];
   const decision=localPolicy(s,options);
   assert.equal(decision.kind,'kill');
   assert.deepEqual(decision.options.map(o=>o.command.card_index),[0]);
@@ -56,9 +57,12 @@ test('all living enemies must be covered for a local kill decision',()=>{
   assert.notEqual(decision.kind,'kill');
 });
 
-test('a lethal incoming turn is survived only by a sufficient block play',()=>{
-  const s=state({player:{hp:10,block:0},battle:{enemies:[enemy({intents:[{type:'Attack',label:'12'}]})]}});
-  const survival=localPolicy(s,[card(0,'防御: 获得5点格挡。'),card(1,'岿然不动: 获得30点格挡。 消耗。'),endTurn]);
+test('a lethal incoming turn is survived only by a proven covering play',()=>{
+  const s=state({player:{hp:10,block:0,hand:[
+    {id:'DEFEND',index:0,cost:'1',description:'获得5点格挡。'},
+    {id:'IMPERVIOUS',index:1,cost:'2',description:'获得30点格挡。'}
+  ]},battle:{enemies:[enemy({intents:[{type:'Attack',label:'12'}]})]}});
+  const survival=localPolicy(s,[card(0,'防御: 获得5点格挡。'),card(1,'岿然不动: 获得30点格挡。'),endTurn]);
   assert.equal(survival.kind,'play');
   assert.equal(survival.option.command.card_index,1);
 
@@ -69,12 +73,17 @@ test('a lethal incoming turn is survived only by a sufficient block play',()=>{
   assert.equal(partial.kind,'escalate');
 });
 
-test('significant non-lethal damage yields a mitigation shortlist, not a forced play',()=>{
-  const s=state({player:{hp:60,block:0},battle:{enemies:[enemy({intents:[{type:'Attack',label:'18'}]})]}});
+test('unproven exhaust cover is not a local survive play',()=>{
+  const s=state({player:{hp:10,block:0,hand:[{id:'I',index:0,cost:'2',description:'获得30点格挡。消耗。'}]},
+    battle:{enemies:[enemy({intents:[{type:'Attack',label:'12'}]})]}});
+  assert.equal(localPolicy(s,[card(0,'岿然不动: 获得30点格挡。 消耗。'),endTurn]).kind,'escalate');
+});
+
+test('significant non-lethal damage is not a forced local play',()=>{
+  const s=state({player:{hp:60,block:0,hand:[{id:'D',index:0,cost:'1',description:'获得5点格挡。'}]},
+    battle:{enemies:[enemy({intents:[{type:'Attack',label:'18'}]})]}});
   const decision=localPolicy(s,[card(0,'防御: 获得5点格挡。'),card(1,'打击: 造成6点伤害。 -> Enemy (20 HP)'),endTurn]);
-  assert.equal(decision.kind,'shortlist');
-  assert.equal(decision.options[0].command.card_index,0);
-  assert.ok(decision.candidates[0].why.includes('block'));
+  assert.equal(decision.kind,'decline');
 });
 
 test('a quiet turn declines so the fast model keeps ownership',()=>{
@@ -88,7 +97,8 @@ test('unknown intents always decline instead of guessing',()=>{
 });
 
 test('a deterministic lethal prefix needs stated damage and a stable combat id',()=>{
-  const s=state({battle:{enemies:[enemy({hp:12})]}});
+  const s=state({player:{hand:[{id:'STRIKE',index:2,cost:'1',description:'造成12点伤害。'}]},
+    battle:{enemies:[enemy({hp:12})]}});
   const plan=prefixPlan(s,[card(2,'打击: 造成12点伤害。 -> Enemy (12 HP)',{command:{target:'E_0'}}),endTurn]);
   assert.deepEqual(plan,[{card_index:2,target_combat_id:1}]);
 
@@ -104,7 +114,10 @@ test('a deterministic lethal prefix needs stated damage and a stable combat id',
 });
 
 test('a lethal displayed attack is survived by the only covering play',()=>{
-  const s=state({player:{hp:10,block:0},battle:{enemies:[enemy({intents:[{type:'Attack',label:'10'}]})]}});
+  const s=state({player:{hp:10,block:0,hand:[
+    {id:'S',index:0,cost:'1',description:'造成6点伤害。'},
+    {id:'U',index:1,cost:'1',description:'获得11点格挡。'}
+  ]},battle:{enemies:[enemy({intents:[{type:'Attack',label:'10'}]})]}});
   const decision=localPolicy(s,[card(0,'打击: 造成6点伤害。 -> Enemy (20 HP)'),card(1,'究极防御: 获得11点格挡。'),endTurn]);
   assert.equal(decision.kind,'play');
   assert.equal(decision.option.command.card_index,1);
@@ -120,12 +133,14 @@ test('routine mitigation is left to the fast model, not decided by the program',
 });
 
 test('a lethal attack that cannot be covered escalates instead of guessing',()=>{
-  const s=state({player:{hp:10,block:0},battle:{enemies:[enemy({intents:[{type:'Attack',label:'18'}]})]}});
+  const s=state({player:{hp:10,block:0,hand:[{id:'U',index:0,cost:'1',description:'获得11点格挡。'}]},
+    battle:{enemies:[enemy({intents:[{type:'Attack',label:'18'}]})]}});
   assert.equal(localPolicy(s,[card(0,'究极防御: 获得11点格挡。'),endTurn]).kind,'escalate');
 });
 
 test('survival arithmetic respects block already carried into the turn',()=>{
-  const s=state({player:{hp:2,block:8},battle:{enemies:[enemy({intents:[{type:'Attack',label:'10'}]})]}});
+  const s=state({player:{hp:2,block:8,hand:[{id:'D',index:0,cost:'1',description:'获得5点格挡。'}]},
+    battle:{enemies:[enemy({intents:[{type:'Attack',label:'10'}]})]}});
   // Only 2 more block are needed to live, so a small block card is enough.
   const decision=localPolicy(s,[card(0,'防御: 获得5点格挡。'),endTurn]);
   assert.equal(decision.kind,'play');
@@ -150,22 +165,28 @@ test('a lethal displayed attack blocks the local continuation',()=>{
 });
 
 test('a lethal single play is taken even with other cards in hand',()=>{
-  const s=state({player:{hp:60,block:0},battle:{enemies:[enemy({hp:7,intents:[{type:'Attack',label:'12'}]})]}});
-  const options=[card(0,'耸肩无视: 获得8点格挡。 抽1张牌。'),card(1,'打击: 造成8点伤害。 -> Enemy (7 HP)'),endTurn];
+  const s=state({player:{hp:60,block:0,hand:[
+    {id:'S',index:0,cost:'1',description:'获得8点格挡。抽1张牌。'},
+    {id:'STRIKE',index:1,cost:'1',description:'造成8点伤害。'}
+  ]},battle:{enemies:[enemy({hp:7,intents:[{type:'Attack',label:'12'}]})]}});
+  const options=[card(0,'耸肩无视: 获得8点格挡。 抽1张牌。'),card(1,'打击: 造成8点伤害。 -> Enemy (7 HP)',{command:{target:'E_0'}}),endTurn];
   const next=nextLocalPlay(s,options);
   assert.equal(next.option.command.card_index,1);
   assert.match(next.reason,/Finish the last living enemy/);
 });
 
 test('a last-enemy lethal still resolves locally when other cards are in hand',()=>{
-  const s=state({player:{hp:60,block:0},battle:{enemies:[enemy({hp:7,intents:[{type:'Attack',label:'12'}]})]}});
-  const options=[card(0,'耸肩无视: 获得8点格挡。 抽1张牌。'),card(1,'打击: 造成8点伤害。 -> Enemy (7 HP)'),endTurn];
+  const s=state({player:{hp:60,block:0,hand:[
+    {id:'S',index:0,cost:'1',description:'获得8点格挡。抽1张牌。'},
+    {id:'STRIKE',index:1,cost:'1',description:'造成8点伤害。'}
+  ]},battle:{enemies:[enemy({hp:7,intents:[{type:'Attack',label:'12'}]})]}});
+  const options=[card(0,'耸肩无视: 获得8点格挡。 抽1张牌。'),card(1,'打击: 造成8点伤害。 -> Enemy (7 HP)',{command:{target:'E_0'}}),endTurn];
   const next=nextLocalPlay(s,options);
   assert.equal(next.option.command.card_index,1);
 });
 
 test('a kill line needs one distinct card per enemy and enough energy',()=>{
-  const hand=[{index:0,cost:'1'},{index:1,cost:'1'},{index:2,cost:'2'}];
+  const hand=[{index:0,cost:'1',description:'造成6点伤害。'},{index:1,cost:'1',description:'造成6点伤害。'},{index:2,cost:'2',description:'造成6点伤害。'}];
   const two=state({player:{hp:60,block:0,energy:1,hand},
     battle:{enemies:[enemy({entity_id:'E_0',hp:6}),enemy({entity_id:'E_1',combat_id:2,hp:6})]}});
   const strike=(card_index,target)=>card(card_index,'打击: 造成6点伤害。',{command:{target}});
@@ -184,29 +205,29 @@ test('a kill line needs one distinct card per enemy and enough energy',()=>{
 });
 
 test('needed damage covers block then hp, so 6 damage does not kill 6 HP + 4 block',()=>{
-  const shielded=()=>state({player:{hp:60,block:0,energy:3,hand:[{index:0,cost:'1'}]},
+  const shielded=()=>state({player:{hp:60,block:0,energy:3,hand:[{index:0,cost:'1',description:'造成6点伤害。'}]},
     battle:{enemies:[enemy({hp:6,block:4})]}});
   assert.notEqual(localPolicy(shielded(),[card(0,'打击: 造成6点伤害。'),endTurn]).kind,'kill');
   assert.notEqual(localPolicy(shielded(),[card(0,'戳刺: 造成1点伤害。'),endTurn]).kind,'kill');
-  assert.equal(localPolicy(shielded(),[card(0,'打击: 造成10点伤害。'),endTurn]).kind,'kill');
+  assert.equal(localPolicy(state({player:{hp:60,block:0,energy:3,hand:[{index:0,cost:'1',description:'造成10点伤害。'}]},
+    battle:{enemies:[enemy({hp:6,block:4})]}}),[card(0,'打击: 造成10点伤害。'),endTurn]).kind,'kill');
 });
 
 test('a fight the hand cannot answer stops instead of grinding',()=>{
   // 20 HP, 25 displayed damage, and the best block in hand is 5: this turn
   // already empties the bar, so the program reports instead of looping.
-  const doomed=state({player:{hp:20,block:0,energy:3,hand:[{index:0,cost:'1'}]},
+  const doomed=state({player:{hp:20,block:0,energy:3,hand:[{index:0,cost:'1',description:'获得5点格挡。'}]},
     battle:{enemies:[enemy({hp:40,intents:[{type:'Attack',label:'25'}]})]}});
   const options=[card(0,'防御: 获得5点格挡。'),endTurn];
   const risk=attritionRisk(doomed,options);
   assert.equal(risk.kind,'attrition');
   assert.equal(risk.evidence.hand_cover,5);
   assert.equal(risk.evidence.lethal_in_turns,1);
-  // A hand that can cover the attack is playable, so nothing is reported.
-  assert.equal(attritionRisk(doomed,[card(0,'岿然不动: 获得30点格挡。'),endTurn]),null);
-  // A lethal line removes the attacker, which is a different answer.
-  const killable=state({player:{hp:20,energy:3,hand:[{index:0,cost:'1'}]},
+  assert.equal(attritionRisk(state({player:{hp:20,block:0,energy:3,hand:[{index:0,cost:'2',description:'获得30点格挡。'}]},
+    battle:{enemies:[enemy({hp:40,intents:[{type:'Attack',label:'25'}]})]}}),[card(0,'岿然不动: 获得30点格挡。'),endTurn]),null);
+  const killable=state({player:{hp:20,energy:3,hand:[{index:0,cost:'1',description:'造成6点伤害。'}]},
     battle:{enemies:[enemy({hp:6,intents:[{type:'Attack',label:'25'}]})]}});
-  assert.equal(attritionRisk(killable,[card(0,'打击: 造成6点伤害。 -> E (6 HP)'),endTurn]),null);
+  assert.equal(attritionRisk(killable,[card(0,'打击: 造成6点伤害。 -> E (6 HP)',{command:{target:'E_0'}}),endTurn]),null);
   // Survivable for more than one turn is still a fight, not a report.
   const survivable=state({player:{hp:40,block:0,energy:3,hand:[{index:0,cost:'1'}]},
     battle:{enemies:[enemy({hp:40,intents:[{type:'Attack',label:'18'}]})]}});

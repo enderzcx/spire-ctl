@@ -56,12 +56,12 @@ round trip per card. The contract is explicit and checked on every step:
 
 Supported condition kinds: `hp_at_least`, `hp_at_most`, `same_floor`,
 `same_run`, `enemy_count_at_most`, `same_enemies`, `intents_unchanged`. Unknown
-condition or expiry kinds fail closed. A strategy must carry a run identity from
-the live state; the same floor number on another run is not enough. The `order`
-entries match advertised option labels and only constrain legal options. If
-nothing in the order matches while a card is still playable, the program does
-not end the turn. Save a strategy with `save-strategy` / `spire_save_strategy`
-rather than editing a file by hand.
+condition or expiry kinds fail closed. Persistent strategy requires a real run identity. The live bridge currently
+exposes only act, floor and ascension, so `save-strategy` cannot bind a run.
+Pass a strategy to `battle` / `spire_battle` with `expected_state_id` for that
+call only; it is not reused on the next invocation. `order` constrains the
+fast-model menu. If nothing matches, the program hands over instead of ending
+the turn or picking a card.
 
 ## Mechanical progress and short plans
 
@@ -72,8 +72,9 @@ Two more decision shapes exist besides a single fast-model choice:
   and stops at the first screen that needs a decision. Gold, potion and chest
   claims are mechanical; a card reward, a route, a shop purchase, a rest-site
   choice and an event trade are decisions and are never taken by this command.
-- A battle turn offers the fast model a small set of verified candidate lines
-  when at least two modeled prefixes exist. Each candidate carries the energy,
+- A battle turn offers every legal single action (including end turn) plus a
+  small number of proven two-card prefixes when the remaining step budget allows.
+  Each verified candidate carries the energy,
   damage, block, kill count, survival result and expected state patch the
   program computed. One request picks a line. A two-card line is one request
   and two sequential verified sends through the same executor as `plan`. Survival
