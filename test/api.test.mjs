@@ -30,12 +30,15 @@ test('the controller hands the shortlist through to the fast-model seam',async()
     send:async()=>{sends++;return{status:'ok'};}};
   try{
     const decide=async(_s,_o,extra)=>{seen=extra;return{option:actions(combat)[1],answer:{confidence:.8},usage:{input_tokens:5}};};
-    const controller=createController({runtimeDir:dir,apiKey:'unused',decide,openGame:()=>fake});
+    const control=await mkdtemp(join(tmpdir(),'spire-seam-control-'));
+    const controller=createController({runtimeDir:dir,controlDir:control,apiKey:'unused',decide,openGame:()=>fake});
+    try{
     await controller.battle(2);
     // The controller forwards the program's shortlist through its options bag;
     // before the fix the seed was accepted and then silently dropped.
-    assert.equal(seen?.shortlist?.kind,'shortlist');
-    assert.match(seen.shortlist.reason,/mitigation/i);
-    assert.equal(seen.apiKey,'unused');
+      assert.equal(seen?.shortlist?.kind,'shortlist');
+      assert.match(seen.shortlist.reason,/mitigation/i);
+      assert.equal(seen.apiKey,'unused');
+    }finally{await rm(control,{recursive:true,force:true});}
   }finally{await rm(dir,{recursive:true,force:true});}
 });

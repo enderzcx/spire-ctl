@@ -148,3 +148,35 @@ test('rewards advertise claims first and mark an unclaimed exit',()=>{
   assert.deepEqual(actions(empty).map(a=>a.command.action),['proceed']);
   assert.equal(actions(empty)[0].label,'Proceed');
 });
+test('a finished run offers only the return to the main menu',()=>{
+  const over={state_type:'game_over',run:{act:1,floor:11},player:{hp:0,max_hp:80},
+    game_over:{message:'Run ended.',options:['main_menu']}};
+  const list=actions(over);
+  assert.deepEqual(list.map(a=>a.command.action),['menu_select']);
+  assert.equal(list[0].command.option,'main_menu');
+  assert.equal(actions({...over,game_over:{options:[]}}).length,0);
+});
+test('an action that provably changed nothing does not leave a halt',()=>temporary(async dir=>{
+  const control=await mkdtemp(join(tmpdir(),'spire-control-'));
+  // Clicking an already-selected character is idempotent: the game is unchanged,
+  // so there is nothing to replay and the caller may choose differently.
+  const x=s();
+  const game={read:async()=>x,settled:async()=>{throw Error('No settled state transition; do not repeat the action');},
+    send:async()=>({status:'ok'})};
+  try{
+    const result=await execute(game,stateId(x),'0',{dir,control});
+    assert.equal(result.no_state_change,true);
+    // The halt was cleared, so the next action is allowed.
+    await execute({...game,settled:async()=>x},stateId(x),'0',{dir,control});
+  }finally{await rm(control,{recursive:true,force:true});}
+}));
+
+test('an unverifiable failure still halts and refuses the next action',()=>temporary(async dir=>{
+  const control=await mkdtemp(join(tmpdir(),'spire-control-'));
+  const x=s();
+  const game={read:async()=>x,settled:async()=>{throw Error('timeout');},send:async()=>({status:'ok'})};
+  try{
+    await assert.rejects(execute(game,stateId(x),'0',{dir,control}),/timeout/);
+    await assert.rejects(execute({...game,settled:async()=>x},stateId(x),'0',{dir,control}),/outcome unknown/);
+  }finally{await rm(control,{recursive:true,force:true});}
+}));

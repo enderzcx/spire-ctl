@@ -25,6 +25,9 @@ export async function withLock(dir,fn){
 export const PROTOCOL=3;
 export function recorder(dir){return async data=>{await mkdir(dir,{recursive:true});await appendFile(join(dir,'events.jsonl'),JSON.stringify({at:new Date().toISOString(),protocol:PROTOCOL,...data})+'\n');};}
 
+// `control` holds the shared halt and lock material; it is the bridge's state
+// directory in production and may be pointed elsewhere by tests so one case
+// cannot leak a halt into the next.
 export async function execute(game,expectedId,optionId,{dir,control=dir,record=recorder(dir),source='planner'}={}){
   try{await readFile(join(control,'HALTED'));throw Error('Previous action outcome unknown: inspect game and clear the halt explicitly');}catch(e){if(e.code!=='ENOENT')throw e;}
   const before=await game.read();
@@ -42,6 +45,18 @@ export async function execute(game,expectedId,optionId,{dir,control=dir,record=r
     await rm(join(control,'HALTED'));
     return {action_ms,...envelope(after)};
   }catch(e){
+    // "No settled state transition" is the one outcome that is provably
+    // consequence-free: the action was accepted but the game looks exactly the
+    // same, so nothing needs replaying and the caller may choose differently.
+    // Every other failure stays halted, because the action may have happened.
+    if(/No settled state transition/.test(e.message)){
+      const settledId=stateId(await game.read());
+      if(settledId===expectedId){
+        await rm(join(control,'HALTED'));
+        await record({event:'no_state_change',source,option,reason:e.message});
+        return {action_ms:Math.round(performance.now()-start),no_state_change:true,...envelope(await game.read())};
+      }
+    }
     await writeFile(join(control,'HALTED'),JSON.stringify({expectedId,option,reason:e.message}));
     await record({event:'halted',source,reason:e.message});throw e;
   }

@@ -63,6 +63,31 @@ normal execution path, and stops the moment a condition fails or an expiry
 condition fires. New enemies, changed intents, a new floor or a broken HP floor
 therefore return control automatically instead of being papered over.
 
+## Mechanical progress and short plans
+
+Two more decision shapes exist besides a single fast-model choice:
+
+- `node bin/spire.mjs advance [MAX_STEPS]` performs only mechanical steps - claim
+  free rewards, advance dialogue, click a fixed button, walk the new-run menu -
+  and stops at the first screen that needs a decision. Gold, potion and chest
+  claims are mechanical; a card reward, a route, a shop purchase, a rest-site
+  choice and an event trade are decisions and are never taken by this command.
+- With `SPIRE_CANDIDATES=1`, a battle turn offers the fast model a small set of
+  verified candidate lines (a confirmed kill, a single known play, a block play,
+  or one two-step prefix) instead of one card at a time. Each candidate carries
+  the energy, damage, block, kill count and survival result the program computed.
+  One request asks the model to pick a line and, in the same batch, judges each
+  candidate on a single independent dimension. The program combines those
+  answers: survival is a hard constraint the model cannot override, an agreed
+  strategy outranks the ranking, and the model's own pick is honoured among the
+  surviving lines. Cards with effects the program cannot bound never join a
+  prefix.
+
+The fast model's input is a filtered English projection (`src/input.mjs`): stable
+card ids with checked effects, the program's computed totals, the enemies'
+displayed damage, and the exact condition to judge. The game UI stays Chinese and
+no command surface is sent.
+
 ## Operational limits
 
 - One executing agent at a time. CLI mutations use a per-user, per-loopback-port shared lock; humans and other apps must not manipulate the board concurrently.

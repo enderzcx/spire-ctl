@@ -69,6 +69,13 @@ export function actions(s,{deduplicate=true}={}) {
     // The bridge closes the inventory first, then enables and presses Proceed.
     // can_proceed describes the button before that close, not this compound action.
     if(s.shop&&!s.shop.error)add({action:'proceed'},'Close inventory and leave shop');
+  } else if(s.state_type==='game_over') {
+    // Returning to the main menu is the only action a finished run offers. It is
+    // not destructive: the run is already recorded in the profile history, and
+    // the same menu path starts the next one.
+    for(const name of s.game_over?.options??[]) {
+      if(name==='main_menu')add({action:'menu_select',option:name},'Return to the main menu');
+    }
   } else if(s.state_type==='menu') {
     // Menu options are advertised so a harness can walk the supported new-run
     // path: singleplayer -> standard -> character_select -> embark. Starting a
