@@ -131,6 +131,27 @@ export async function clearStrategy(dir){
   await rm(strategyFile(dir),{force:true});
 }
 
+function normalizeCondition(condition){
+  if(!condition||typeof condition!=='object')return {kind:''};
+  return {kind:condition.kind??'',value:condition.value??null,act:condition.act??null,
+    floor:condition.floor??null,entity_ids:condition.entity_ids??null,signature:condition.signature??null};
+}
+
+export function policyFingerprint(strategy){
+  if(!strategy||typeof strategy!=='object')return '';
+  return JSON.stringify({
+    conditions:Array.isArray(strategy.conditions)?strategy.conditions.map(normalizeCondition):[],
+    expires_on:Array.isArray(strategy.expires_on)?strategy.expires_on.map(normalizeCondition):[],
+    order:Array.isArray(strategy.order)?strategy.order.map(preference=>({
+      match:String(preference?.match??''),why:preference?.why==null?'':String(preference.why)
+    })):[]
+  });
+}
+
+export function handoffKey(stateId,strategy=null,{protocol}={}){
+  return `${stateId}|${protocol??''}|${policyFingerprint(strategy)}`;
+}
+
 export async function noteHandoff(dir,stateId,reason){
   await mkdir(dir,{recursive:true});
   let journal={};

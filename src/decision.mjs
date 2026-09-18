@@ -58,22 +58,6 @@ export async function decideCombat({state,options,route,strategy=null,ask=null,p
     return handoff(`invalid strategy: ${applied.reason}`,
       {instruction:'Return a decision, or a strategy with explicit conditions and expiry'});
 
-  const attrition=attritionRisk(state,options);
-  if(attrition)return handoff(attrition.reason,{attrition:attrition.evidence,
-    instruction:'The displayed attack out-scales this hand; consider a potion, a different line, or accept the loss'});
-
-  const policy=localPolicy(state,options);
-  if(policy.kind==='escalate')return handoff(policy.reason,{local_evidence:policy.evidence});
-  if(policy.kind==='kill'&&policy.options.length<=remainingSteps){
-    const line=prefixFrom(state,policy.options,'local',policy.reason,{local:policy});
-    if(line)return line;
-  }
-  if(policy.kind==='play'||policy.kind==='guard')
-    return execute(policy.option,'local',policy.reason,{local:policy});
-
-  const finisher=nextLocalPlay(state,options);
-  if(finisher)return execute(finisher.option,'local',finisher.reason,{local:finisher});
-
   const cards=playableOf(options);
   const endTurn=options.find(option=>option.command?.action==='end_turn');
   if(!cards.length&&endTurn)
@@ -88,6 +72,22 @@ export async function decideCombat({state,options,route,strategy=null,ask=null,p
         {instruction:'Return a decision, or a strategy whose order matches a legal option'});
     menu=constrained.options;
   }
+
+  const attrition=attritionRisk(state,menu);
+  if(attrition)return handoff(attrition.reason,{attrition:attrition.evidence,
+    instruction:'The displayed attack out-scales this hand; consider a potion, a different line, or accept the loss'});
+
+  const policy=localPolicy(state,menu);
+  if(policy.kind==='escalate')return handoff(policy.reason,{local_evidence:policy.evidence});
+  if(policy.kind==='kill'&&policy.options.length<=remainingSteps){
+    const line=prefixFrom(state,policy.options,'local',policy.reason,{local:policy});
+    if(line)return line;
+  }
+  if(policy.kind==='play'||policy.kind==='guard')
+    return execute(policy.option,'local',policy.reason,{local:policy});
+
+  const finisher=nextLocalPlay(state,menu);
+  if(finisher)return execute(finisher.option,'local',finisher.reason,{local:finisher});
 
   if(!ask)return handoff('No tactical adapter available');
   if(priorHandoff)return handoff('repeated_state',{

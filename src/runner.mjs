@@ -1,6 +1,6 @@
 import {actions,inCombat,stateId} from './game.mjs';
 import {envelope,withLock,recorder,PROTOCOL,execute} from './dispatch.mjs';
-import {loadStrategy,seenHandoff,noteHandoff,guardSignature,noteGuard,strategyApplies} from './strategy.mjs';
+import {loadStrategy,seenHandoff,noteHandoff,guardSignature,noteGuard,strategyApplies,handoffKey} from './strategy.mjs';
 import {mechanicalPlan} from './mechanical.mjs';
 import {decideCombat} from './decision.mjs';
 import {runPlan} from './plan.mjs';
@@ -30,10 +30,16 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
     if(tokens>=100000)return {reason:'token_budget',steps,...env};
     if(agreed){
       const applied=strategyApplies(agreed,s,{inCall:agreed.in_call===true});
-      if(!applied.ok)agreed=null;
+      if(!applied.ok){
+        await record({event:'takeover',source:'planner',reason:`invalid strategy: ${applied.reason}`,
+          state_id:env.state_id});
+        return {reason:`invalid strategy: ${applied.reason}`,steps,...env,
+          instruction:'Return a decision, or a strategy with explicit conditions and expiry'};
+      }
     }
     const start=performance.now();
-    const prior=await seenHandoff(dir,env.state_id);
+    const key=handoffKey(env.state_id,agreed,{protocol:PROTOCOL});
+    const prior=await seenHandoff(dir,key);
     let decision;
     try{
       decision=await decideCombat({state:s,options:env.options,route:env.route,strategy:agreed,
@@ -64,7 +70,7 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
         }
       }
       if(decision.reason==='low_confidence'||decision.reason==='low_confidence_candidate'||decision.reason==='repeated_state'){
-        const noted=await noteHandoff(dir,env.state_id,decision.reason);
+        const noted=await noteHandoff(dir,key,decision.reason);
         await record({event:'takeover',source:'planner',reason:decision.reason,state_id:env.state_id,
           repeat_count:noted.count,confidence:decision.proposal?.answer?.confidence??null});
         return {reason:decision.reason,proposal:decision.proposal,steps,...env,repeat_count:noted.count,
@@ -80,7 +86,7 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
       kind:decision.local.kind,reason:decision.reason,evidence:decision.local.evidence,option:decision.option,
       line:decision.local.kind==='kill'?(decision.local.options??[]).map(o=>o.label):undefined});
     if(decision.kind==='execute_prefix'){
-      const result=await runPlan(game,decision.plan,{dir,control,record});
+      const result=await runPlan(game,decision.plan,{dir,control,record,source:decision.source});
       const dispatched=result.dispatched??result.completed??decision.plan.steps.length;
       const confirmed=result.confirmed??(result.reason==='plan_complete'?dispatched:Math.max(0,(result.completed??1)-1));
       await record({event:'cycle',source:decision.source,total_ms:Math.round(performance.now()-start),

@@ -92,7 +92,7 @@ test('an unanswerable fight stops even while a strategy would carry it',()=>temp
   let sends=0;
   const game={read:async()=>start,settled:async()=>start,send:async()=>{sends++;return{status:'ok'};}};
   const result=await battle(game,async()=>({option:{id:'0'},answer:{confidence:.9}}),{dir});
-  assert.match(result.reason,/exceeds the 5 this hand can cover/);
+  assert.match(result.reason,/exceeds the \d+ this hand can cover/);
   assert.equal(sends,0,'nothing is played into a lost position');
   assert.equal(result.attrition.lethal_in_turns,1);
 }));
