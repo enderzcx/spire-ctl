@@ -95,7 +95,11 @@ test('speculative per-candidate questions are independent',()=>{
 
 test('the adapter asks one batch for the choice plus independent judgments',async()=>{
   const {choose}=await import('../src/jev.mjs');
-  const s=state({player:{energy:3,hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','1','Skill')]}});
+  // A lethal displayed attack, so the per-candidate safety questions are asked.
+  // 6 block from the hand cannot cover a 9-damage attack on 5 HP, so the defense
+  // line is the only surviving candidate and the safety questions are asked.
+  const s=state({player:{hp:5,block:2,energy:3,hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','1','Skill')]},
+    enemies:[{entity_id:'E_0',combat_id:1,name:'E',hp:20,max_hp:20,block:0,intents:[{type:'Attack',label:'9'}]}]});
   const options=[option(0,0,'打击: 造成6点伤害。 -> E (20 HP)',{target:'E_0'}),option(1,1,'防御: 获得5点格挡。')];
   const candidates=planCandidates(s,options);
   assert.ok(candidates.length>=2,'fixture offers at least two candidates');
@@ -129,4 +133,71 @@ test('an unused candidate path never asks a model',async()=>{
   const fetcher=async()=>{requests++;return{ok:true,json:async()=>({answers:{next:{choice:'0',confidence:.9}}})};};
   await choose(s,options,{apiKey:'test-key',fetcher,candidates});
   assert.equal(requests,1,'a single candidate falls back to the plain choice path');
+});
+
+test('an unsure candidate answer is reported instead of acted on',async()=>{
+  const {choose}=await import('../src/jev.mjs');
+  const s=state({player:{energy:3,hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','1','Skill')]}});
+  const options=[option(0,0,'打击: 造成6点伤害。 -> E (20 HP)',{target:'E_0'}),option(1,1,'防御: 获得5点格挡。')];
+  const candidates=planCandidates(s,options);
+  const fetcher=async()=>({ok:true,json:async()=>({answers:{
+    plan:{type:'choice',choice:candidates[0].id,confidence:.01},
+    [`safe_${candidates[0].id}`]:{type:'noul',noul:.31},
+    [`safe_${candidates[1].id}`]:{type:'noul',noul:.66}
+  },usage:{input_tokens:90,output_tokens:9}})}) ;
+  const result=await choose(s,options,{apiKey:'test-key',fetcher,candidates});
+  assert.equal(result.low_confidence_candidate,true);
+  assert.equal(result.option,null,'an unsure line is not dispatched');
+  assert.equal(result.answer.confidence,.01);
+  assert.equal(result.plan_batch_requests??result.requests,1);
+  // The independent judgments travel with the packet so a caller can escalate
+  // with evidence rather than a bare number.
+  assert.equal(result.answer.nouls[`safe_${candidates[1].id}`],.66);
+});
+
+test('the candidate cutoff is configurable for measurement',async()=>{
+  const {choose}=await import('../src/jev.mjs');
+  const s=state({player:{energy:3,hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','1','Skill')]}});
+  const options=[option(0,0,'打击: 造成6点伤害。 -> E (20 HP)',{target:'E_0'}),option(1,1,'防御: 获得5点格挡。')];
+  const candidates=planCandidates(s,options);
+  const fetcher=async()=>({ok:true,json:async()=>({answers:{
+    plan:{type:'choice',choice:candidates[1].id,confidence:.2},
+    [`safe_${candidates[0].id}`]:{type:'noul',noul:.2},
+    [`safe_${candidates[1].id}`]:{type:'noul',noul:.8}
+  }})}) ;
+  process.env.SPIRE_PLAN_MIN_CONFIDENCE='0.1';
+  try{
+    const result=await choose(s,options,{apiKey:'test-key',fetcher,candidates});
+    assert.equal(result.low_confidence_candidate,undefined);
+    assert.equal(result.planned,true);
+    assert.ok(result.option,'a lowered gate acts');
+  }finally{delete process.env.SPIRE_PLAN_MIN_CONFIDENCE;}
+});
+
+test('the candidate threshold scales with the stakes',async()=>{
+  const {choose}=await import('../src/jev.mjs');
+  const options=[option(0,0,'打击: 造成6点伤害。 -> E (20 HP)',{target:'E_0'}),option(1,1,'防御: 获得5点格挡。')];
+  const quiet=state({player:{hp:70,energy:3,hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','1','Skill')]}});
+  const quietCandidates=planCandidates(quiet,options);
+  assert.ok(quietCandidates.every(candidate=>candidate.survives===true),'quiet board: every line survives');
+  const answer=confidence=>({ok:true,json:async()=>({answers:{
+    plan:{type:'choice',choice:quietCandidates[1].id,confidence},
+    ...Object.fromEntries(quietCandidates.map(c=>[`safe_${c.id}`,{type:'noul',noul:.8}]))
+  }})});
+  // A low-stakes turn acts on a weaker judgment...
+  const low=await choose(quiet,options,{apiKey:'k',fetcher:async()=>answer(.3),candidates:quietCandidates});
+  assert.ok(low.option,'a safe, low-stakes line is acted on');
+  assert.equal(low.low_confidence_candidate,undefined);
+  // ...while a lethal turn demands the full cutoff.
+  const lethal=state({player:{hp:5,block:2,energy:3,hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。','1','Skill')]},
+    enemies:[{entity_id:'E_0',combat_id:1,name:'E',hp:20,max_hp:20,block:0,intents:[{type:'Attack',label:'9'}]}]});
+  const lethalCandidates=planCandidates(lethal,options.map(o=>o.command.card_index===0
+    ?option(0,0,'打击: 造成6点伤害。 -> E (20 HP)',{target:'E_0'})
+    :option(1,1,'防御: 获得5点格挡。')));
+  const strict=await choose(lethal,options,{apiKey:'k',fetcher:async()=>({ok:true,json:async()=>({answers:{
+    plan:{type:'choice',choice:lethalCandidates.find(c=>c.block>0)?.id??lethalCandidates[0].id,confidence:.3},
+    ...Object.fromEntries(lethalCandidates.map(c=>[`safe_${c.id}`,{type:'noul',noul:.6}]))
+  }})}),candidates:lethalCandidates});
+  assert.equal(strict.low_confidence_candidate,true,'a lethal turn keeps the full cutoff');
+  assert.equal(strict.option,null);
 });

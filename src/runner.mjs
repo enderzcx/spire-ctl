@@ -68,7 +68,7 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
   const openingStep=steps;
   // A strategy agreed at a previous takeover is loaded once and re-checked on
   // every step against the live state.
-  const agreed=await loadStrategy(dir);
+  const agreed=await loadStrategy(dir,s);
   for(;steps<max;steps++){
     const env=envelope(s);
     const actedThisTurn=steps>openingStep;
@@ -159,7 +159,15 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
         await record({event:'decision',source:'jev',state_id:env.state_id,...d,
           playable_cards:candidates.filter(o=>o.command.action==='play_card').length,
           shortlist_reason:d.answer?.shortlist_reason??null,narrowed:d.answer?.narrowed??false});
-        if(d.answer.confidence<.5){
+        if(d.low_confidence_candidate){
+          // A candidate line the model was not sure about. Acting on it would be
+          // the program overruling an unsure answer, and substituting the
+          // program's own preferred card would be worse: the packet goes back
+          // with the independent judgments attached as evidence.
+          return {reason:d.no_surviving_candidate?'Potential lethal incoming damage':'low_confidence_candidate',
+            proposal:d,steps,...env,
+            instruction:'Return a decision, or a strategy with explicit conditions and expiry'};
+        }else if(d.answer.confidence<.5){
           // The cutoff is unchanged. A low-confidence answer is only a handoff
           // when the program has no defensible move of its own:
           //   1. a fully-determined local play (guard / confirmed lethal /

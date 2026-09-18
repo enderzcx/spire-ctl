@@ -68,9 +68,20 @@ export function strategyPreference(strategy,options){
   return null;
 }
 
-export async function loadStrategy(dir){
-  try{return JSON.parse(await readFile(strategyFile(dir),'utf8'));}
+// A strategy belongs to the run and floor it was agreed on. A new run starts at
+// floor 1 (or the run counter resets), so a strategy recorded deeper than the
+// current floor is from a previous run and is discarded instead of quietly
+// steering the new one.
+export async function loadStrategy(dir,state=null){
+  let strategy=null;
+  try{strategy=JSON.parse(await readFile(strategyFile(dir),'utf8'));}
   catch(error){if(error.code==='ENOENT')return null;throw error;}
+  if(state&&Number.isFinite(strategy?.created_floor)&&Number.isFinite(state.run?.floor)
+    &&strategy.created_floor>state.run.floor){
+    await clearStrategy(dir);
+    return null;
+  }
+  return strategy;
 }
 
 export async function saveStrategy(dir,strategy){

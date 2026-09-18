@@ -156,3 +156,12 @@ test('a strategy may close a turn it cannot otherwise act on',()=>{
     {id:'0',command:{action:'end_turn'},label:'End turn'}];
   assert.equal(strategyPreference(strategy(),both).option.id,'1');
 });
+
+test('a strategy from a previous run is discarded instead of steering a new one',()=>temp(async dir=>{
+  await saveStrategy(dir,{...strategy(),created_floor:11,conditions:[{kind:'same_floor',act:1,floor:11}]});
+  // Still on floor 11: it applies.
+  assert.equal((await loadStrategy(dir,{run:{act:1,floor:11}})).strategy_id,'s1');
+  // A new run starts at floor 1, so the old strategy is dropped and removed.
+  assert.equal(await loadStrategy(dir,{run:{act:1,floor:1}}),null);
+  assert.equal(await loadStrategy(dir),null,'the file was cleared, not just ignored');
+}));

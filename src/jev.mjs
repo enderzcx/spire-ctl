@@ -50,8 +50,12 @@ export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,
       candidate.id,
       `${candidate.title} | cost ${candidate.energy} energy | damage ${candidate.damage} | block ${candidate.block} | kills ${candidate.kills} | survives displayed attack: ${candidate.survives}`
     ]));
+    // The safety question is only meaningful when the program's own arithmetic
+    // says some line dies. On a turn every candidate survives, survival is not a
+    // question to ask - it is already proven - so only the ranking question goes.
+    const anyDies=candidates.some(candidate=>candidate.survives===false);
     const questions={plan:{type:'choice',instructions:CANDIDATE_INSTRUCTIONS,criteria:candidateCriteria},
-      ...candidateQuestions(candidates)};
+      ...(anyDies?candidateQuestions(candidates):{})};
     const res=await fetcher('https://api.typesafe.ai/v1/systemone',{method:'POST',
       headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'},
       body:JSON.stringify({model:'jev-latest',state:{...input,strategy:strategy??input.strategy},questions}),
@@ -64,7 +68,100 @@ export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,
     for(const key of Object.keys(result.answers??{}))
       if(key!=='plan')judgments[key]=result.answers[key]?.noul;
     const picked=chooseCandidate(candidates,{choice:plan.choice},strategy??null);
-    if(!picked?.candidate)throw Error('No candidate satisfies the survival constraint');
+    if(!picked?.candidate){
+      // The program's own survival constraint eliminates every line. That is a
+      // real planner decision, not a malformed answer, so it is reported rather
+      // than thrown and certainly not overridden.
+      return {option:null,answer:{...plan,nouls:judgments},
+        candidate:null,no_surviving_candidate:true,
+        usage:{input_tokens:Number(result.usage?.input_tokens??0),output_tokens:Number(result.usage?.output_tokens??0)},
+        requests:1,inference_ms:Math.round(performance.now()-started),
+        retried:false,narrowed:false,stable:false,planned:true,low_confidence_candidate:true};
+    }
+    // The same cutoff applies to a candidate answer as to a single-card answer.
+    // If the model is not sure which line to take, the program reports that
+    // instead of silently acting on an unsure choice; the independent judgments
+    // are attached so the caller can escalate with evidence.
+    // The threshold scales with the stakes, as the provider's own guidance
+    // requires: a turn where the program proved every line survives is a
+    // low-stakes ranking question, while a lethal turn, a low-HP position or an
+    // unverified card is not. Safety never depends on this number - the survival
+    // constraint above and the legality checks stay in code.
+    const gate=Number(process.env.SPIRE_PLAN_MIN_CONFIDENCE??(anyDies?0.5:0.25));
+    if(plan.confidence<gate){
+      // One narrowed retry: the two most valuable lines only. A higher
+      // confidence on a smaller menu is a better judgment, not a lowered bar,
+      // so the retry still has to clear the same gate.
+      const top=[...candidates].sort((a,b)=>b.damage-a.damage||b.block-a.block).slice(0,2);
+      // On a turn where the program proved every line survives, an unsure answer
+      // is usually "which style" rather than "is this safe". Ask that question
+      // literally - attack line or defense line - and offer an explicit
+      // "unclear" option so the model can still say it does not know instead of
+      // being forced to guess.
+      if(!anyDies&&top.length>1){
+        const offense=[...top].sort((a,b)=>b.damage-a.damage)[0];
+        const defense=[...top].sort((a,b)=>b.block-a.block)[0];
+        if(offense.id!==defense.id){
+          const binary={offense:`attack line: ${offense.title} | damage ${offense.damage} | block ${offense.block}`,
+            defense:`defense line: ${defense.title} | damage ${defense.damage} | block ${defense.block}`,
+            unclear:'neither line is better than the other with what is known'};
+          const res2=await fetcher('https://api.typesafe.ai/v1/systemone',{method:'POST',
+            headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'},
+            body:JSON.stringify({model:'jev-latest',state:input,questions:{style:{
+              type:'choice',
+              instructions:'Pick the line style to play this turn. "offense" means the listed attack line; "defense" means the listed block line. Choose "unclear" when the two lines are equally good or the state does not say which is better.',
+              criteria:binary}}}),
+            signal:signal?AbortSignal.any([signal,AbortSignal.timeout(8000)]):AbortSignal.timeout(8000)});
+          if(res2.ok){
+            const r2=await res2.json(),style=r2.answers?.style;
+            const chosen=style?.choice==='offense'?offense:style?.choice==='defense'?defense:null;
+            if(chosen){
+              const step=chosen.steps[0];
+              const styleOption=options.find(candidate=>candidate.id===step.option_id);
+              if(styleOption)return {option:styleOption,answer:{...style,confidence:style.confidence??null,nouls:{}},
+                candidate:{id:chosen.id,title:chosen.title,why:`style question: ${style.choice}`,
+                  steps:chosen.steps.length,energy:chosen.energy,damage:chosen.damage},
+                usage:{input_tokens:Number(result.usage?.input_tokens??0)+Number(r2.usage?.input_tokens??0),
+                  output_tokens:Number(result.usage?.output_tokens??0)+Number(r2.usage?.output_tokens??0)},
+                requests:2,inference_ms:Math.round(performance.now()-started),
+                retried:true,narrowed:true,stable:false,planned:true};
+            }
+          }
+        }
+      }
+      if(top.length>1&&candidates.length>top.length){
+        const narrowCriteria=Object.fromEntries(top.map(candidate=>[candidate.id,candidateCriteria[candidate.id]]));
+        const narrowQuestions={plan:{type:'choice',instructions:CANDIDATE_INSTRUCTIONS,criteria:narrowCriteria},
+          ...(anyDies?candidateQuestions(top):{})};
+        const retry=await fetcher('https://api.typesafe.ai/v1/systemone',{method:'POST',
+          headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'},
+          body:JSON.stringify({model:'jev-latest',state:input,questions:narrowQuestions}),
+          signal:signal?AbortSignal.any([signal,AbortSignal.timeout(8000)]):AbortSignal.timeout(8000)});
+        if(retry.ok){
+          const retryResult=await retry.json(),retryPlan=retryResult.answers?.plan;
+          if(retryPlan&&top.some(candidate=>candidate.id===retryPlan.choice)&&retryPlan.confidence>=gate){
+            const retryPick=chooseCandidate(top,{choice:retryPlan.choice},strategy??null);
+            const step=retryPick?.candidate?.steps?.[0];
+            const retryOption=step?options.find(candidate=>candidate.id===step.option_id):null;
+            if(retryOption)return {option:retryOption,answer:{...retryPlan,nouls:{}},
+              candidate:{id:retryPick.candidate.id,title:retryPick.candidate.title,why:`narrowed retry: ${retryPick.why}`,
+                steps:retryPick.candidate.steps.length,energy:retryPick.candidate.energy,damage:retryPick.candidate.damage},
+              usage:{input_tokens:Number(result.usage?.input_tokens??0)+Number(retryResult.usage?.input_tokens??0),
+                output_tokens:Number(result.usage?.output_tokens??0)+Number(retryResult.usage?.output_tokens??0)},
+              requests:2,inference_ms:Math.round(performance.now()-started),
+              retried:true,narrowed:true,stable:false,planned:true};
+          }
+        }
+      }
+      return {option:null,
+      answer:{...plan,nouls:judgments},
+      candidate:{id:picked.candidate.id,title:picked.candidate.title,why:picked.why,
+        steps:picked.candidate.steps.length,energy:picked.candidate.energy,damage:picked.candidate.damage,
+        survives:picked.candidate.survives},
+      usage:{input_tokens:Number(result.usage?.input_tokens??0),output_tokens:Number(result.usage?.output_tokens??0)},
+      requests:1,inference_ms:Math.round(performance.now()-started),
+      retried:false,narrowed:false,stable:false,planned:true,low_confidence_candidate:true};
+    }
     const firstStep=picked.candidate.steps[0];
     const option=options.find(candidate=>candidate.id===firstStep.option_id);
     if(!option)throw Error('Candidate step is not an advertised option');
