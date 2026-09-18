@@ -7,6 +7,7 @@ import {stateId} from '../src/game.mjs';
 import {battle} from '../src/runner.mjs';
 import {choose} from '../src/jev.mjs';
 import {localPolicy} from '../src/policy.mjs';
+import {saveStrategy} from '../src/strategy.mjs';
 
 const temporary=async fn=>{const dir=await mkdtemp(join(tmpdir(),'spire-local-'));try{await fn(dir);}finally{await rm(dir,{recursive:true,force:true});}};
 const rows=async dir=>(await readFile(join(dir,'events.jsonl'),'utf8')).trim().split('\n').filter(Boolean).map(line=>JSON.parse(line));
@@ -237,3 +238,21 @@ test('choose refuses an empty menu instead of inventing an action',async()=>{
   await assert.rejects(choose(combat(),[],{apiKey:'test-key',fetcher:async()=>{throw Error('must not be called');}}),/No options/);
 });
 
+
+test('an unanswerable fight stops even while a strategy would carry it',()=>temporary(async dir=>{
+  // 5 HP, 22 displayed damage, and the best block in hand is 5: the position is
+  // lost. A strategy that would otherwise carry the loop must not grind it.
+  const start=combat({
+    player:{hp:5,block:0,energy:3,max_hp:80,potions:[],
+      hand:[card(0,'打击: 造成6点伤害。'),card(1,'防御: 获得5点格挡。',{type:'Skill'})]},
+    battle:{enemies:[enemy({hp:14,intents:[{type:'Attack',label:'22',title:'攻势'}]})]}});
+  await saveStrategy(dir,{strategy_id:'carry',created_floor:4,reason:'chip',
+    conditions:[{kind:'same_floor',act:1,floor:4}],expires_on:[],
+    order:[{match:'打击'},{match:'End turn'}]});
+  let sends=0;
+  const game={read:async()=>start,settled:async()=>start,send:async()=>{sends++;return{status:'ok'};}};
+  const result=await battle(game,async()=>({option:{id:'0'},answer:{confidence:.9}}),{dir});
+  assert.match(result.reason,/exceeds the 5 this hand can cover/);
+  assert.equal(sends,0,'nothing is played into a lost position');
+  assert.equal(result.attrition.lethal_in_turns,1);
+}));

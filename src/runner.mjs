@@ -196,6 +196,11 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
           return {reason:d.no_surviving_candidate?'Potential lethal incoming damage':'low_confidence_candidate',
             proposal:d,steps,...env,
             instruction:'Return a decision, or a strategy with explicit conditions and expiry'};
+        }else if(d.planned){
+          // A planned decision already passed the adapter's own, risk-scaled
+          // threshold. Re-applying the single-step cutoff here silently undid
+          // that and sent routine turns back to the planner.
+          option=d.option;source='jev';
         }else if(d.answer.confidence<.5){
           // The cutoff is unchanged. A low-confidence answer is only a handoff
           // when the program has no defensible move of its own:

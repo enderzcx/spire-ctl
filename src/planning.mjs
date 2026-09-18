@@ -91,21 +91,31 @@ export function planCandidates(state,options,{store={},energy=null,limit=4}={}){
     if(second)add(`${labelOf(lethal[0])} then ${labelOf(second)}`,[lethal[0],second]);
   }
 
-  return candidates.slice(0,limit).map(candidate=>({
-    ...candidate,
-    steps:candidate.steps.map(step=>({
-      option_id:step.option.id,
-      card:describeCard((state.player?.hand??[]).find(entry=>entry.index===step.card_index)??{},store),
-      target_entity:step.target_entity,
-      target_combat_id:step.target_combat_id,
-      damage:step.damage,
-      block:step.block,
-      energy:step.energy,
-      kills:step.kills
-    })),
-    incoming:attacks.known?attacks.total:null,
-    survives:attacks.known?attacks.total-(Number(state.player?.block??0)+candidate.block)<Number(state.player?.hp??0):null
-  }));
+  const living=(state.battle?.enemies??[]).filter(enemy=>enemy.hp>0).length;
+  return candidates.slice(0,limit).map(candidate=>{
+    // Surviving a turn has two answers: block enough, or remove the attacker.
+    // Counting only block made a lethal line look like a losing line, which then
+    // asked the model a safety question that was already settled in code.
+    const unblocked=attacks.known?Math.max(0,attacks.total-(Number(state.player?.block??0)+candidate.block)):null;
+    const survives=unblocked===null?null
+      :(candidate.kills>=living)||unblocked<Number(state.player?.hp??0);
+    return {
+      ...candidate,
+      steps:candidate.steps.map(step=>({
+        option_id:step.option.id,
+        card:describeCard((state.player?.hand??[]).find(entry=>entry.index===step.card_index)??{},store),
+        target_entity:step.target_entity,
+        target_combat_id:step.target_combat_id,
+        damage:step.damage,
+        block:step.block,
+        energy:step.energy,
+        kills:step.kills
+      })),
+      incoming:attacks.known?attacks.total:null,
+      unblocked,
+      survives
+    };
+  });
 }
 
 function labelOf(step){

@@ -67,7 +67,39 @@ export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,
     const judgments={};
     for(const key of Object.keys(result.answers??{}))
       if(key!=='plan')judgments[key]=result.answers[key]?.noul;
-    const picked=chooseCandidate(candidates,{choice:plan.choice},strategy??null);
+    // When the adapter asked the per-candidate safety question, the model's own
+    // independent judgments may contradict the line it picked. The numbers are
+    // a ranking signal inside the surviving set - never a way past the survival
+    // constraint, and never used when the model did not answer them.
+    const safetyOf=id=>{const value=judgments[`safe_${id}`];return Number.isFinite(value)?value:null;};
+    let modelChoice=plan.choice;
+    const chosenSafety=safetyOf(modelChoice);
+    if(chosenSafety!==null){
+      const better=candidates.filter(candidate=>candidate.id!==modelChoice)
+        .map(candidate=>({candidate,safety:safetyOf(candidate.id)}))
+        .filter(entry=>entry.safety!==null&&entry.safety>=chosenSafety+0.15)
+        .sort((a,b)=>b.safety-a.safety)[0];
+      if(better)modelChoice=better.candidate.id;
+    }
+    const picked=chooseCandidate(candidates,{choice:modelChoice},strategy??null);
+    // The model's own independent safety judgments can be decisive even when its
+    // ranking confidence is not: a line it rated clearly safer than every other
+    // is a judgment the program can act on without lowering any threshold. The
+    // survival constraint has already been applied above.
+    const ratedSafer=picked?.candidate&&chosenSafety!==null&&
+      (safetyOf(picked.candidate.id)??0)>=0.6&&
+      candidates.filter(candidate=>candidate.id!==picked.candidate.id)
+        .every(candidate=>{const other=safetyOf(candidate.id);return other===null||(safetyOf(picked.candidate.id)-other)>=0.15;});
+    if(picked?.candidate&&ratedSafer){
+      const step=picked.candidate.steps[0];
+      const saferOption=options.find(candidate=>candidate.id===step.option_id);
+      if(saferOption)return {option:saferOption,answer:{...plan,nouls:judgments,safety_resolved:true},
+        candidate:{id:picked.candidate.id,title:picked.candidate.title,why:`safer according to the model's own judgment (${safetyOf(picked.candidate.id)})`,
+          steps:picked.candidate.steps.length,energy:picked.candidate.energy,damage:picked.candidate.damage},
+        usage:{input_tokens:Number(result.usage?.input_tokens??0),output_tokens:Number(result.usage?.output_tokens??0)},
+        requests:1,inference_ms:Math.round(performance.now()-started),
+        retried:false,narrowed:false,stable:false,planned:true};
+    }
     if(!picked?.candidate){
       // The program's own survival constraint eliminates every line. That is a
       // real planner decision, not a malformed answer, so it is reported rather
@@ -115,10 +147,13 @@ export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,
           if(res2.ok){
             const r2=await res2.json(),style=r2.answers?.style;
             const chosen=style?.choice==='offense'?offense:style?.choice==='defense'?defense:null;
-            if(chosen){
+            // The style answer carries its own confidence and the program
+            // honours it: the earlier candidate answer was unsure, but this
+            // literal either/or question is the one that decided the turn.
+            if(chosen&&Number(style?.confidence??0)>=0.25){
               const step=chosen.steps[0];
               const styleOption=options.find(candidate=>candidate.id===step.option_id);
-              if(styleOption)return {option:styleOption,answer:{...style,confidence:style.confidence??null,nouls:{}},
+              if(styleOption)return {option:styleOption,answer:{...style,confidence:style.confidence??null,nouls:{},style_resolved:true},
                 candidate:{id:chosen.id,title:chosen.title,why:`style question: ${style.choice}`,
                   steps:chosen.steps.length,energy:chosen.energy,damage:chosen.damage},
                 usage:{input_tokens:Number(result.usage?.input_tokens??0)+Number(r2.usage?.input_tokens??0),
@@ -158,6 +193,9 @@ export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,
       candidate:{id:picked.candidate.id,title:picked.candidate.title,why:picked.why,
         steps:picked.candidate.steps.length,energy:picked.candidate.energy,damage:picked.candidate.damage,
         survives:picked.candidate.survives},
+      gate,any_dies:anyDies,
+      candidate_survival:candidates.map(candidate=>({id:candidate.id,title:candidate.title,
+        survives:candidate.survives,block:candidate.block,damage:candidate.damage})),
       usage:{input_tokens:Number(result.usage?.input_tokens??0),output_tokens:Number(result.usage?.output_tokens??0)},
       requests:1,inference_ms:Math.round(performance.now()-started),
       retried:false,narrowed:false,stable:false,planned:true,low_confidence_candidate:true};
