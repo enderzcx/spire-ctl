@@ -1,5 +1,5 @@
 diff --git a/McpMod.StateBuilder.cs b/McpMod.StateBuilder.cs
-index 76eee84..b2c38d8 100644
+index 76eee84..29b1892 100644
 --- a/McpMod.StateBuilder.cs
 +++ b/McpMod.StateBuilder.cs
 @@ -1073,6 +1073,17 @@ public static partial class McpMod
@@ -20,6 +20,38 @@ index 76eee84..b2c38d8 100644
  
          // Enemies
          var enemies = new List<Dictionary<string, object?>>();
+@@ -1911,6 +1922,9 @@ public static partial class McpMod
+ 
+         // Cards in the grid (sorted by visual position - MoveToFront can reorder children)
+         var cardHolders = FindAllSortedByPosition<NGridCardHolder>(screen);
++        var selectedCards = GetInstanceFieldValue(screen, "_selectedCards") as HashSet<CardModel>;
++        state["selection_observable"] = selectedCards != null;
++        var selectedIndices = new List<int>();
+         var cards = new List<Dictionary<string, object?>>();
+         int index = 0;
+         foreach (var holder in cardHolders)
+@@ -1920,10 +1934,21 @@ public static partial class McpMod
+ 
+             var cardInfo = BuildCardInfo(card);
+             cardInfo["index"] = index;
++            if (selectedCards != null)
++            {
++                bool selected = selectedCards.Contains(card);
++                cardInfo["is_selected"] = selected;
++                if (selected) selectedIndices.Add(index);
++            }
+             cards.Add(cardInfo);
+             index++;
+         }
+         state["cards"] = cards;
++        if (selectedCards != null)
++        {
++            state["selected_count"] = selectedCards.Count;
++            state["selected_indices"] = selectedIndices;
++        }
+ 
+         // Preview container showing? (selection complete, awaiting confirm)
+         // Upgrade screens use UpgradeSinglePreviewContainer / UpgradeMultiPreviewContainer
 diff --git a/McpMod.cs b/McpMod.cs
 index 3b5ed64..f4a4c7d 100644
 --- a/McpMod.cs

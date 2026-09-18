@@ -1,8 +1,14 @@
 import {mkdir,readFile,writeFile,appendFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
-import {actions,inCombat,route,stateId} from './game.mjs';
+import {actions,inCombat,route,stateId,incomingDamage} from './game.mjs';
 
-export function envelope(state){const options=actions(state);return {state_id:stateId(state),route:route(state,options),options,state};}
+export function envelope(state){
+  const options=actions(state),incoming=inCombat(state)?incomingDamage(state):null;
+  const attackGap=incoming===null?null:Math.max(0,incoming-(state.player?.block??0));
+  return {state_id:stateId(state),route:route(state,options),options,state,
+    tactical_facts:inCombat(state)?{displayed_attack_damage:incoming,block_needed_for_displayed_attacks:attackGap,
+      note:'Current displayed attacks only; excludes future card effects and end-turn triggers.'}:undefined};
+}
 
 export async function withLock(dir,fn){
   await mkdir(dir,{recursive:true});const lock=join(dir,'execution.lock');

@@ -4,7 +4,7 @@ import {mkdtemp,readFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {actions,route,stateId,incomingDamage,createGame} from '../src/game.mjs';
-import {execute,battle,withLock} from '../src/runner.mjs';
+import {execute,battle,withLock,envelope} from '../src/runner.mjs';
 import {choose} from '../src/jev.mjs';
 
 const s=()=>({state_type:'monster',run:{act:1,floor:4},battle:{ready_for_action:true,enemies:[{hp:12,entity_id:'E_0',name:'Enemy',intents:[{type:'Attack',label:'5'}]}]},player:{hp:40,max_hp:80,block:0,energy:3,hand:[{id:'STRIKE',index:0,can_play:true,target_type:'AnyEnemy',name:'Strike',description:'Deal 6 damage',cost:'1'}],potions:[]}});
@@ -27,6 +27,11 @@ test('routing covers normal, deterministic, low HP, unknown intent and lethal',(
   const x=s();assert.equal(route(x).kind,'jev');x.player.hand=[];assert.equal(route(x).kind,'deterministic');
   x.player.hp=10;assert.equal(route(x).kind,'planner');x.player.hp=40;x.battle.enemies[0].intents[0].label='?';assert.equal(route(x).kind,'planner');
   x.battle.enemies[0].intents[0].label='21×2';assert.equal(incomingDamage(x),42);assert.equal(route(x).kind,'planner');
+});
+test('planner facts distinguish a numeric block gap from unknown damage',()=>{
+  const x=s();x.battle.enemies[0].intents[0].label='15';x.player.block=10;
+  assert.equal(envelope(x).tactical_facts.block_needed_for_displayed_attacks,5);
+  x.battle.enemies[0].intents[0].label='?';assert.equal(envelope(x).tactical_facts.block_needed_for_displayed_attacks,null);
 });
 test('potion review is requested before significant unblocked end-turn damage',()=>{
   const x=s();x.player.hand=[];x.battle.enemies[0].intents[0].label='11';x.player.potions=[{slot:0,can_use_in_combat:true,target_type:'AllEnemies'}];
