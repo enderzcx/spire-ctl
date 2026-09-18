@@ -11,7 +11,7 @@ export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,
     hand:p.hand,status:p.status,orbs:p.orbs,orb_slots:p.orb_slots,relics:p.relics,draw_pile:p.draw_pile,discard_pile:p.discard_pile}};
   const instructions='Choose the best next action to survive and win this Slay the Spire 2 combat. Prioritize guaranteed lethal damage. Account for enemy intents, vulnerable/weak, block, energy, setup and draw. Do not waste energy on redundant defense or end turn with useful cards remaining.';
   const started=performance.now();
-  async function ask(menu){
+  async function ask(menu=criteria){
     const res=await fetcher('https://api.typesafe.ai/v1/systemone',{method:'POST',
       headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'},
       body:JSON.stringify({model:'jev-latest',state:input,questions:{next:{type:'choice',instructions,criteria:menu}}}),
@@ -22,19 +22,33 @@ export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,
     return {option:options.find(o=>o.id===answer.choice),answer,model:result.model,usage:result.usage};
   }
   const first=await ask(criteria);
+  let answer=first;
+
   // A low-confidence answer over the whole hand is not evidence that the
   // situation needs a planner. When the program can narrow the choice to a few
   // defensible actions, ask again with that smaller menu instead of lowering
   // the bar or escalating. The cutoff is unchanged.
-  if(first.answer.confidence<.5&&shortlist?.options?.length){
+  if(answer.answer.confidence<.5&&shortlist?.options?.length){
     const narrowed=options.filter(option=>shortlist.options.some(o=>o.id===option.id));
     if(narrowed.length&&narrowed.length<options.length){
       const menu=Object.fromEntries(narrowed.map(o=>[o.id,`${o.label} [program: ${shortlist.reason}]`]));
       const retry=await ask(menu);
-      if(retry.answer.confidence>=first.answer.confidence)
-        return {...retry,narrowed:true,shortlist_reason:shortlist.reason,
-          inference_ms:Math.round(performance.now()-started),retried:true};
+      if(retry.answer.confidence>=answer.answer.confidence)
+        answer={...retry,narrowed:true,shortlist_reason:shortlist.reason};
     }
   }
-  return {...first,inference_ms:Math.round(performance.now()-started),retried:false,narrowed:false};
+
+  // Still below the cutoff: ask once more on the same menu. Two identical
+  // answers give the caller a stability signal it can verify; this module never
+  // lowers the bar itself and still reports the original low confidence.
+  if(answer.answer.confidence<.5){
+    const probe=await ask(answer.narrowed
+      ? Object.fromEntries(options.filter(o=>shortlist.options.some(s=>s.id===o.id)).map(o=>[o.id,`${o.label} [program: ${shortlist.reason}]`]))
+      : criteria);
+    answer={...answer,stable:probe.answer.choice===answer.answer.choice,
+      second_confidence:probe.answer.confidence,model:probe.model??answer.model};
+  }
+
+  return {...answer,inference_ms:Math.round(performance.now()-started),
+    retried:Boolean(answer.narrowed),narrowed:Boolean(answer.narrowed),stable:answer.stable??false};
 }

@@ -116,12 +116,17 @@ const sideEffectFree=option=>!/失去.*生命|消耗|随机/.test(String(option?
 // the case where every reasonable player makes the same move.
 export function guardOption(state,options,attacks=incomingAttacks(state)){
   if(!attacks.known||attacks.total<=0)return null;
-  const gap=Math.max(0,attacks.total-Number(state.player?.block??0));
-  if(gap<=0)return null;
-  const entry=blockOptions(options).find(candidate=>candidate.block>=gap&&sideEffectFree(candidate.option));
-  if(!entry)return null;
-  return {kind:'guard',reason:`Guard ${attacks.total} displayed damage with ${entry.block} block`,
-    option:entry.option,evidence:{incoming:attacks.total,block:Number(state.player?.block??0),gap}};
+  const hp=Number(state.player?.hp??0),block=Number(state.player?.block??0);
+  const gap=Math.max(0,attacks.total-block);
+  // Routine mitigation is a tactical preference and belongs to the fast model.
+  // Only an unblockable death is deterministic, and only when exactly one play
+  // prevents it: two ways to survive would itself be a choice to weigh.
+  if(gap<hp)return null;
+  const covering=blockOptions(options).filter(candidate=>candidate.block>=gap&&sideEffectFree(candidate.option));
+  if(covering.length!==1)return null;
+  const entry=covering[0];
+  return {kind:'play',reason:`Survive ${attacks.total} displayed damage with ${entry.block} block from the only such play`,
+    option:entry.option,evidence:{incoming:attacks.total,block,hp,gap}};
 }
 
 // Decide locally only when the arithmetic leaves one defensible action:
@@ -141,6 +146,8 @@ export function localPolicy(state,options){
   const lethal=lethalOptions(state,options);
   const blockers=blockOptions(options);
 
+  // 1. Finish: displayed attacks cover every living enemy. Killing needs no
+  //    defense that turn, so this is settled arithmetic rather than a preference.
   const totalLife=living.reduce((sum,enemy)=>sum+enemy.hp+enemy.block,0);
   const killable=[...lethal.values()].reduce((sum,list)=>sum+Math.max(...list.map(entry=>entry.damage)),0);
   const canKillAll=[...lethal.keys()].length===living.length&&killable>=totalLife;
@@ -157,21 +164,26 @@ export function localPolicy(state,options){
     }
   }
 
+  // 2. Survive: the displayed attack kills us and exactly one play prevents it.
+  //    Surviving outranks every hidden cost, but two possible saves would be a
+  //    choice, so the fast model takes it.
   if(gap>=hp){
-    // Surviving the turn outranks every hidden cost: an exhausting block card is
-    // a normal choice when the alternative is death.
-    const survival=blockers.filter(entry=>entry.block>=gap);
-    if(survival.length)return {kind:'play',reason:`Survive ${attacks.total} displayed damage with ${survival[0].block} block`,
-      option:survival[0].option,evidence:{incoming:attacks.total,block,hp}};
-    return {kind:'escalate',reason:`Lethal ${gap} damage cannot be blocked from this hand`,
+    const covering=blockers.filter(entry=>entry.block>=gap);
+    if(covering.length===1)return {kind:'play',
+      reason:`Survive ${attacks.total} displayed damage with ${covering[0].block} block from the only such play`,
+      option:covering[0].option,evidence:{incoming:attacks.total,block,hp,gap}};
+    if(!covering.length)return {kind:'escalate',reason:`Lethal ${gap} damage cannot be blocked from this hand`,
       evidence:{incoming:attacks.total,block,hp,best_block:blockers[0]?.block??0}};
+    return {kind:'shortlist',reason:`${covering.length} plays could survive ${attacks.total} displayed damage`,
+      options:covering.slice(0,3).map(entry=>entry.option),
+      candidates:covering.slice(0,3).map(entry=>({option:entry.option,why:`${entry.block} block clears the ${gap} gap`})),
+      evidence:{incoming:attacks.total,block,hp,gap}};
   }
 
-  // Routine defense that is fully determined by the numbers: no lethal line
-  // exists, the displayed attack is known, and one play covers it completely.
-  const guard=guardOption(state,options,attacks);
-  if(guard)return guard;
-
+  // 3. Everything else is a tactical preference (which card first, damage versus
+  //    block, how to spend limited energy) and belongs to the fast model. The
+  //    program only narrows the menu when a mitigation option is clearly
+  //    relevant, and never picks between comparable cards itself.
   if(gap>=Math.max(8,Math.round(hp*.25))&&blockers.length){
     const candidates=blockers.slice(0,3).map(entry=>({option:entry.option,why:`${entry.block} block against ${attacks.total} displayed damage`}));
     return {kind:'shortlist',reason:`Significant ${gap} unblocked damage; keep mitigation in the running`,
@@ -205,33 +217,12 @@ export function prefixPlan(state,options,limit=3){
 // played when the account is healthy, but never while a single mistake is fatal.
 const unbounded=/随机|加入.*手牌|加入.*抽牌堆|消耗|失去.*生命/;
 
-// A predictable, self-contained effect: a stated amount of block or draw.
-const fillBlock=/获得(\d+)点格挡/;
-const fillDraw=/抽(\d+)张牌/;
-
-function fillOptions(state,options){
-  const out=[];
-  for(const option of playable(options)){
-    const label=String(option.label??'');
-    if(optionDamage(option)!==null)continue;
-    if(unbounded.test(label))continue;
-    const block=Number(label.match(fillBlock)?.[1]??0);
-    const draw=Number(label.match(fillDraw)?.[1]??0);
-    if(!block&&!draw)continue;
-    out.push({option,block,draw,value:block*4+draw*6});
-  }
-  return out.sort((a,b)=>b.value-a.value);
-}
-
-// One locally-chosen next action inside a turn the program is already running.
-//
-// Two cases are pure program work:
-//   1. a cheap attack whose number and target are both known,
-//   2. a self-contained block or draw play when no attack is available, which
-//      is what a player does with a hand of skills.
-// The program still refuses to be greedy: nothing is played while the displayed
-// attack would be lethal, and unknown effects are only risked from a healthy
-// position.
+// A single-action continuation that is NOT a tactical choice. Only two shapes
+// qualify, because anything else ("hit the biggest number", "block instead of
+// attack") is a tactical preference and belongs to the fast model:
+//   - the one and only playable card, so there is no alternative to weigh,
+//   - a play that removes the last living enemy this turn.
+// When several cards could reasonably be played, this returns null on purpose.
 export function nextLocalPlay(state,options){
   const attacks=incomingAttacks(state);
   const living=enemiesOf(state);
@@ -240,35 +231,49 @@ export function nextLocalPlay(state,options){
   const gap=Math.max(0,attacks.total-block);
   if(gap>=hp)return null;
 
-  const kills=lethalOptions(state,options);
-  const ranked=[];
-  for(const option of playable(options)){
-    const damage=optionDamage(option);
-    if(!isNum(damage)||damage<=0)continue;
-    if(!optionTarget(option,state))continue;
-    const label=String(option.label??'');
-    const risky=unbounded.test(label);
-    // A risky card is only acceptable when the account is clearly healthy, or
-    // when it is the exact play that removes a living enemy this turn.
-    const lethalNow=[...kills.values()].some(list=>list.some(entry=>entry.option===option));
-    if(risky&&!lethalNow&&hp<Number(state.player?.max_hp??0)*.5)continue;
-    ranked.push({option,damage,risky,cost:Number(option.command?.card_index??0)});
-  }
-  if(ranked.length){
-    ranked.sort((a,b)=>(a.risky?1:0)-(b.risky?1:0)||b.damage-a.damage||a.cost-b.cost);
-    const pick=ranked[0];
-    return {kind:'resolve',reason:`Continue the turn with a known ${pick.damage}-damage play`,
-      option:pick.option,evidence:{incoming:attacks.total,block,hp,damage:pick.damage}};
+  const cards=playable(options);
+
+  // A confirmed lethal removes the enemy, so no other card can beat it and the
+  // order stops mattering. This is the one play the program may choose from a
+  // full hand.
+  if(living.length===1){
+    const finisher=cards.find(option=>{
+      if(!sideEffectFree(option))return false;
+      const damage=optionDamage(option),target=optionTarget(option,state);
+      return isNum(damage)&&damage>0&&target&&damage>=Math.max(0,target.hp-target.block);
+    });
+    if(finisher)return {kind:'resolve',reason:`Finish the last living enemy with a confirmed lethal play`,
+      option:finisher,evidence:{incoming:attacks.total,block,hp,damage:optionDamage(finisher)}};
   }
 
-  // No attack to continue with: a defensive or draw play is still better than
-  // paying a model round trip, and a hand that expires at end of turn makes it
-  // strictly better than doing nothing.
-  const fill=fillOptions(state,options);
-  if(fill.length){
-    const pick=fill[0];
-    return {kind:'resolve',reason:`Play a self-contained ${pick.block?`${pick.block}-block`:`${pick.draw}-draw`} card with no attack available`,
-      option:pick.option,evidence:{incoming:attacks.total,block,hp,value:pick.value}};
+  // Otherwise only a hand with a single possible action is free of choice.
+  if(cards.length!==1)return null;
+  const option=cards[0];
+  if(!sideEffectFree(option))return null;
+  if(unbounded.test(String(option.label??'')))return null;
+  return {kind:'resolve',reason:'Play the only playable card',option,
+    evidence:{incoming:attacks.total,block,hp}};
+}
+
+// The fast model is asked one step at a time and sometimes answers the same
+// option twice with a stable-but-below-cutoff confidence. Handing that back
+// forever is worse than acting on it, but only when the program can verify the
+// proposal is not a blunder: the play is legal, it is not skipped in a turn
+// where standing still loses, and it does not touch unknown effects.
+export function verifyStableProposal(state,options,option){
+  const attacks=incomingAttacks(state);
+  const living=enemiesOf(state);
+  if(!attacks.known||!living.length)return {ok:false,reason:'Combat arithmetic unavailable'};
+  if(!option||option.command?.action!=='play_card')return {ok:false,reason:'Not a card play'};
+  const hp=Number(state.player?.hp??0),block=Number(state.player?.block??0);
+  const gap=Math.max(0,attacks.total-block);
+  const label=String(option.label??'');
+  if(gap>=hp){
+    // A losing turn must be answered with a play that actually prevents it.
+    const covers=blockOptions(options).some(entry=>entry.option===option&&entry.block>=gap);
+    if(!covers)return {ok:false,reason:`Losing ${gap} damage standstill; proposal does not prevent it`};
+    return {ok:true,reason:'Proposed play prevents the lethal turn'};
   }
-  return null;
+  if(unbounded.test(label))return {ok:false,reason:'Proposal uses an effect the arithmetic cannot bound'};
+  return {ok:true,reason:'Stable proposal with no unbounded effect'};
 }

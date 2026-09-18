@@ -1,7 +1,7 @@
 import {mkdir,readFile,writeFile,appendFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {actions,inCombat,route,stateId,incomingDamage} from './game.mjs';
-import {localPolicy,guardOption,nextLocalPlay} from './policy.mjs';
+import {localPolicy,guardOption,nextLocalPlay,verifyStableProposal} from './policy.mjs';
 
 export function envelope(state){
   const options=actions(state),incoming=inCombat(state)?incomingDamage(state):null;
@@ -88,6 +88,21 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
         }
       }
       if(!option){
+        // A model call needs a real question. One playable card plus "end turn",
+        // or an empty hand, is not a choice: asking anyway costs 0.6-1.2s and
+        // buys nothing, and the local rules above already refuse to guess.
+        const candidates=env.options.filter(o=>o.command.action!=='use_potion');
+        const playable=candidates.filter(o=>o.command.action==='play_card');
+        const hasPotion=env.options.some(o=>o.command.action==='use_potion');
+        if(playable.length<=1&&!hasPotion){
+          const only=playable[0]??env.options.find(o=>o.command.action==='end_turn');
+          if(!only)return {reason:'no_legal_action',steps,...env};
+          option=only;source='local';
+          local={kind:'sole_action',reason:`No choice to make: ${playable.length?`the only playable card (${only.label.slice(0,40)})`:'nothing playable'}`,
+            evidence:{playable_cards:playable.length}};
+        }
+      }
+      if(!option){
         const candidates=env.options.filter(o=>o.command.action!=='use_potion');
         const shortlist=decision?.kind==='shortlist'?decision:null;
         const d=await decide(s,candidates,shortlist);
@@ -95,15 +110,27 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
         // Hoist the shortlist provenance so the log shows, without reading the
         // model answer, whether a narrowed menu produced this decision.
         await record({event:'decision',source:'jev',state_id:env.state_id,...d,
+          playable_cards:candidates.filter(o=>o.command.action==='play_card').length,
           shortlist_reason:d.answer?.shortlist_reason??null,narrowed:d.answer?.narrowed??false});
         if(d.answer.confidence<.5){
           // The cutoff is unchanged. A low-confidence answer is only a handoff
-          // when the program has no fully-determined move of its own: a guard
-          // that covers the whole displayed attack, or a self-contained play
-          // the fast model is likely missing (it cannot see end-of-turn expiry).
+          // when the program has no defensible move of its own:
+          //   1. a fully-determined local play (guard / confirmed lethal /
+          //      the only legal card),
+          //   2. the same answer twice with the proposal verified as safe.
           const fallback=policy?guardOption(s,env.options)??nextLocalPlay(s,env.options):null;
-          if(!fallback)return {reason:'low_confidence',proposal:d,steps,...env};
-          option=fallback.option;source='local';local={...fallback,low_confidence:d.answer.confidence};
+          const stable=d.answer.stable&&d.answer.second_confidence<.5&&policy
+            ?verifyStableProposal(s,env.options,d.option):null;
+          if(stable?.ok){
+            option=d.option;source='local';
+            local={kind:'jev_stable',reason:`Fast model repeated the same choice at ${d.answer.confidence.toFixed(2)}; ${stable.reason}`,
+              evidence:{confidence:d.answer.confidence,second:d.answer.second_confidence}};
+          }else if(fallback){
+            option=fallback.option;source='local';local={...fallback,low_confidence:d.answer.confidence};
+          }else{
+            return {reason:'low_confidence',proposal:d,steps,...env,
+              stable_rejection:stable?.reason??'no stable proposal'};
+          }
         }else{
           option=d.option;source='jev';
         }

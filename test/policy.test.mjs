@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {incomingAttacks,incomingDamage,localPolicy,nextLocalPlay,optionBlock,optionDamage,prefixPlan,intentDamage} from '../src/policy.mjs';
+import {incomingAttacks,incomingDamage,localPolicy,nextLocalPlay,optionBlock,optionDamage,prefixPlan,intentDamage,verifyStableProposal} from '../src/policy.mjs';
 
 const enemy=(overrides={})=>({entity_id:'E_0',combat_id:1,name:'Enemy',hp:20,max_hp:20,block:0,
   intents:[{type:'Attack',label:'6',title:'攻势'}],status:[],...overrides});
@@ -103,59 +103,73 @@ test('a deterministic lethal prefix needs stated damage and a stable combat id',
   assert.equal(prefixPlan(state({battle:{enemies:[enemy({hp:20})]}}),[card(0,'飞剑回旋镖: 随机对敌人造成3点伤害3次。'),endTurn]),null);
 });
 
-test('a fully covering cheap block play is taken by the program as a guard',()=>{
-  const s=state({player:{hp:60,block:0},battle:{enemies:[enemy({intents:[{type:'Attack',label:'10'}]})]}});
+test('a lethal displayed attack is survived by the only covering play',()=>{
+  const s=state({player:{hp:10,block:0},battle:{enemies:[enemy({intents:[{type:'Attack',label:'10'}]})]}});
   const decision=localPolicy(s,[card(0,'打击: 造成6点伤害。 -> Enemy (20 HP)'),card(1,'究极防御: 获得11点格挡。'),endTurn]);
-  assert.equal(decision.kind,'guard');
+  assert.equal(decision.kind,'play');
   assert.equal(decision.option.command.card_index,1);
-  assert.match(decision.reason,/Guard 10 displayed damage with 11 block/);
+  assert.match(decision.reason,/only such play/);
 });
 
-test('a guard never consumes a card with a hidden cost',()=>{
+test('routine mitigation is left to the fast model, not decided by the program',()=>{
+  // A moderate attack that several cards could answer is a tactical tradeoff:
+  // damage now versus block now. The program declines instead of preferring one.
   const s=state({player:{hp:60,block:0},battle:{enemies:[enemy({intents:[{type:'Attack',label:'10'}]})]}});
-  const decision=localPolicy(s,[card(0,'坚毅: 获得7点格挡。  随机消耗1张牌。'),card(1,'岿然不动: 获得30点格挡。 消耗。'),endTurn]);
-  // Neither play is a program guard, and the attack is not material enough for
-  // a mitigation shortlist, so the fast model keeps the choice.
+  const decision=localPolicy(s,[card(0,'坚毅: 获得7点格挡。  随机消耗1张牌。'),card(1,'打击: 造成6点伤害。 -> Enemy (20 HP)'),endTurn]);
   assert.equal(decision.kind,'decline');
 });
 
-test('a guard is not invented when the block play cannot cover the attack',()=>{
-  const s=state({player:{hp:60,block:0},battle:{enemies:[enemy({intents:[{type:'Attack',label:'18'}]})]}});
-  assert.equal(localPolicy(s,[card(0,'究极防御: 获得11点格挡。'),endTurn]).kind,'shortlist');
+test('a lethal attack that cannot be covered escalates instead of guessing',()=>{
+  const s=state({player:{hp:10,block:0},battle:{enemies:[enemy({intents:[{type:'Attack',label:'18'}]})]}});
+  assert.equal(localPolicy(s,[card(0,'究极防御: 获得11点格挡。'),endTurn]).kind,'escalate');
 });
 
-test('guard arithmetic respects block already carried into the turn',()=>{
-  const s=state({player:{hp:60,block:8},battle:{enemies:[enemy({intents:[{type:'Attack',label:'10'}]})]}});
-  // Only 2 more block are needed, so a small block card is enough.
+test('survival arithmetic respects block already carried into the turn',()=>{
+  const s=state({player:{hp:2,block:8},battle:{enemies:[enemy({intents:[{type:'Attack',label:'10'}]})]}});
+  // Only 2 more block are needed to live, so a small block card is enough.
   const decision=localPolicy(s,[card(0,'防御: 获得5点格挡。'),endTurn]);
-  assert.equal(decision.kind,'guard');
+  assert.equal(decision.kind,'play');
   assert.equal(decision.evidence.gap,2);
 });
 
-test('a hand of skills is played by the program instead of costing a round trip',()=>{
+test('several playable cards are a tactical choice and go to the fast model',()=>{
   const s=state({player:{hp:60,block:0},battle:{enemies:[enemy({intents:[{type:'Attack',label:'12'}]})]}});
-  const options=[card(0,'耸肩无视: 获得8点格挡。 抽1张牌。'),card(1,'战斗专注: 抽3张牌。'),card(2,'晕眩: 不能被打出。'),endTurn];
-  const next=nextLocalPlay(s,options);
-  assert.equal(next.kind,'resolve');
-  assert.equal(next.option.command.card_index,0);
-  assert.match(next.reason,/8-block/);
-});
-
-test('a fill play never takes a card with a hidden cost',()=>{
-  const s=state({player:{hp:60,block:0},battle:{enemies:[enemy({intents:[{type:'Attack',label:'12'}]})]}});
-  const options=[card(0,'坚毅: 获得7点格挡。  随机消耗1张牌。'),card(1,'岿然不动: 获得30点格挡。 消耗。'),endTurn];
+  const options=[card(0,'耸肩无视: 获得8点格挡。 抽1张牌。'),card(1,'战斗专注: 抽3张牌。'),endTurn];
   assert.equal(nextLocalPlay(s,options),null);
 });
 
-test('a fill play is skipped when the displayed attack is already lethal',()=>{
+test('the only playable card is executed even when it is a skill',()=>{
+  const s=state({player:{hp:60,block:0},battle:{enemies:[enemy({intents:[{type:'Attack',label:'12'}]})]}});
+  const next=nextLocalPlay(s,[card(0,'耸肩无视: 获得8点格挡。 抽1张牌。'),endTurn]);
+  assert.equal(next.kind,'resolve');
+  assert.match(next.reason,/only playable card/);
+  // A hidden cost still disqualifies it: the program does not gamble.
+  assert.equal(nextLocalPlay(s,[card(0,'坚毅: 获得7点格挡。  随机消耗1张牌。'),endTurn]),null);
+});
+
+test('a lethal displayed attack blocks the local continuation',()=>{
   const s=state({player:{hp:10,block:0},battle:{enemies:[enemy({intents:[{type:'Attack',label:'30'}]})]}});
   assert.equal(nextLocalPlay(s,[card(0,'耸肩无视: 获得8点格挡。 抽1张牌。'),endTurn]),null);
 });
 
-test('a known attack still outranks a self-contained skill',()=>{
-  const s=state({player:{hp:60,block:0},battle:{enemies:[enemy({hp:40,intents:[{type:'Attack',label:'12'}]})]}});
-  const options=[card(0,'耸肩无视: 获得8点格挡。 抽1张牌。'),card(1,'打击: 造成8点伤害。 -> Enemy (40 HP)'),endTurn];
+test('a lethal single play is taken even with other cards in hand',()=>{
+  const s=state({player:{hp:60,block:0},battle:{enemies:[enemy({hp:7,intents:[{type:'Attack',label:'12'}]})]}});
+  const options=[card(0,'耸肩无视: 获得8点格挡。 抽1张牌。'),card(1,'打击: 造成8点伤害。 -> Enemy (7 HP)'),endTurn];
   const next=nextLocalPlay(s,options);
   assert.equal(next.option.command.card_index,1);
-  assert.match(next.reason,/8-damage play/);
+  assert.match(next.reason,/Finish the last living enemy/);
+});
+
+test('a stable proposal is only accepted when it is verifiably not a blunder',()=>{
+  const card=(index,label,type='Attack')=>({id:`C${index}`,command:{action:'play_card',card_index:index},label});
+  // Quiet turn: a bounded play verifies.
+  const quiet=state({player:{hp:60,block:0},battle:{enemies:[enemy({intents:[{type:'Buff',label:''}]})]}});
+  const bash=card(0,'痛击: 造成8点伤害。 给予2层易伤。');
+  assert.equal(verifyStableProposal(quiet,[bash,endTurn],bash).ok,true);
+  // Losing turn: a play that cannot cover the gap is refused.
+  const losing=state({player:{hp:10,block:0},battle:{enemies:[enemy({intents:[{type:'Attack',label:'20'}]})]}});
+  assert.equal(verifyStableProposal(losing,[bash,endTurn],bash).ok,false);
+  // Unbounded effect: refused even when the turn is quiet.
+  const risky=card(1,'羽化: 在你的抽牌堆中加入3张随机攻击牌。 消耗。',"Skill");
+  assert.equal(verifyStableProposal(quiet,[risky,endTurn],risky).ok,false);
 });

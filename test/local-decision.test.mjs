@@ -71,17 +71,41 @@ test('a low-confidence answer is retried on a narrowed menu before escalating',a
   const fetcher=async(_url,init)=>{
     const body=JSON.parse(init.body);
     menus.push(Object.keys(body.questions.next.criteria));
-    const narrow=menus.length>1;
+    // Full menu answers '0' at .3; the narrowed menu answers '1' at .4; the
+    // stability probe repeats '1' at .35. Everything stays under the cutoff, so
+    // the caller receives a low-confidence answer that it may verify and use.
+    const round=menus.length;
     return {ok:true,json:async()=>({model:'jev-latest',usage:{input_tokens:10},
-      answers:{next:{choice:narrow?'1':'0',confidence:narrow?.7:.3}}})};
+      answers:{next:{choice:round===1?'0':'1',confidence:round===1?.3:round===2?.4:.35}}})};
   };
   const result=await choose(state,options,{apiKey:'test-key',fetcher,shortlist:{options:[options[1]],reason:'5 block against 18 displayed damage'}});
-  assert.equal(menus.length,2);
+  // Full menu, the narrowed retry, then the stability re-ask on that menu.
+  assert.equal(menus.length,3);
   assert.deepEqual(menus[0],['0','1','2']);
   assert.deepEqual(menus[1],['1']);
+  assert.deepEqual(menus[2],['1']);
   assert.equal(result.narrowed,true);
   assert.equal(result.retried,true);
+  assert.equal(result.stable,true);
+  assert.equal(result.second_confidence,.35);
   assert.equal(result.option.id,'1');
+  assert.equal(result.answer.confidence,.4);
+});
+
+test('a narrowed answer that clears the cutoff is used without a stability probe',async()=>{
+  const options=[{id:'0',command:{action:'play_card',card_index:0},label:'打击: 造成6点伤害。'},
+    {id:'1',command:{action:'play_card',card_index:1},label:'防御: 获得5点格挡。'},
+    {id:'2',command:{action:'end_turn'},label:'End turn'}];
+  const menus=[];
+  const fetcher=async(_url,init)=>{
+    menus.push(Object.keys(JSON.parse(init.body).questions.next.criteria));
+    const round=menus.length;
+    return {ok:true,json:async()=>({answers:{next:{choice:round===1?'0':'1',confidence:round===1?.3:.7}}})};
+  };
+  const result=await choose(combat(),options,{apiKey:'test-key',fetcher,shortlist:{options:[options[1]],reason:'5 block against 18 displayed damage'}});
+  assert.equal(menus.length,2);
+  assert.equal(result.narrowed,true);
+  assert.equal(result.stable,false);
   assert.equal(result.answer.confidence,.7);
 });
 
@@ -91,7 +115,10 @@ test('the original cutoff still escalates when no shortlist exists',async()=>{
   let calls=0;
   const fetcher=async()=>{calls++;return{ok:true,json:async()=>({answers:{next:{choice:'1',confidence:.4}}})};};
   const result=await choose(combat(),options,{apiKey:'test-key',fetcher});
-  assert.equal(calls,1);
+  // Two asks: the original and the stability check. The cutoff still stands,
+  // so the caller receives the low-confidence answer either way.
+  assert.equal(calls,2);
+  assert.equal(result.stable,true);
   assert.equal(result.narrowed,false);
   assert.equal(result.answer.confidence,.4);
   const quiet=combat({battle:{enemies:[enemy({hp:40,intents:[{type:'Buff',title:'强化',label:''}]})]}});

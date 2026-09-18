@@ -71,12 +71,24 @@ test('second writer cannot take the game lock',()=>temporary(async dir=>{
   await withLock(dir,async()=>{await assert.rejects(withLock(dir,async()=>{}),/Another controller/);});
   await withLock(dir,async()=>{});
 }));
-test('low confidence returns a planner packet without dispatch',()=>temporary(async dir=>{
-  // A real decision the program cannot settle: 20 HP of enemy remains, the only
-  // card deals 6, and 30 incoming damage cannot be fully blocked by that hand.
-  // No lethal line, no guard, nothing to close on: the planner gets the packet
-  // and nothing is dispatched.
-  let sent=0;const x=s();x.battle.enemies[0].hp=20;x.battle.enemies[0].intents[0].label='30';
+test('a lone playable card is executed without asking a model',()=>temporary(async dir=>{
+  // One card plus "end turn" is not a choice: asking costs a round trip and
+  // buys nothing, so the program plays it and records why.
+  let sent=0,sends=0,decideCalls=0;const x=s(),after={state_type:'rewards',rewards:{items:[],can_proceed:true},run:x.run,player:x.player};
+  const game={read:async()=>sends?after:x,settled:async()=>sends?after:x,send:async()=>{sends++;sent++;return{status:'ok'};}};
+  const r=await battle(game,async()=>{decideCalls++;return{option:actions(x)[0],answer:{confidence:.9}};},{dir,max:2});
+  assert.equal(decideCalls,0);assert.equal(sent,1);assert.equal(r.reason,'left_combat');
+  const local=(await readFile(join(dir,'events.jsonl'),'utf8')).trim().split('\n').map(l=>JSON.parse(l)).find(row=>row.event==='local_decision');
+  // Either local shape is acceptable here; what matters is that no model ran.
+  assert.ok(['sole_action','resolve'].includes(local.kind),`unexpected local kind ${local.kind}`);
+}));
+
+test('low confidence over a real choice returns a planner packet',()=>temporary(async dir=>{
+  // Two playable cards and 30 incoming damage that neither can cover: there is
+  // a genuine choice the program refuses to make, so the planner gets it.
+  let sent=0;const x=s();
+  x.battle.enemies[0].hp=20;x.battle.enemies[0].intents[0].label='30';
+  x.player.hand=[{...x.player.hand[0],index:0},{...x.player.hand[0],index:1,id:'STRIKE2'}];
   const game={settled:async()=>x,send:async()=>sent++};
   const r=await battle(game,async()=>({option:actions(x)[0],answer:{confidence:.2},usage:{input_tokens:10}}),{dir});
   assert.equal(r.reason,'low_confidence');assert.equal(sent,0);
