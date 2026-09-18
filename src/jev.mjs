@@ -1,4 +1,4 @@
-export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,fetcher=fetch}={}) {
+export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,fetcher=fetch,signal}={}) {
   if(!apiKey)throw Error('TYPESAFE_API_KEY is missing');
   const criteria=Object.fromEntries(options.map(o=>[o.id,o.label]));
   const p=state.player;
@@ -9,7 +9,7 @@ export async function choose(state,options,{apiKey=process.env.TYPESAFE_API_KEY,
     headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'},
     body:JSON.stringify({model:'jev-latest',state:input,questions:{next:{type:'choice',
       instructions:'Choose the best next action to survive and win this Slay the Spire 2 combat. Prioritize guaranteed lethal damage. Account for enemy intents, vulnerable/weak, block, energy, setup and draw. Do not waste energy on redundant defense or end turn with useful cards remaining.',criteria}}}),
-    signal:AbortSignal.timeout(8000)});
+    signal:signal?AbortSignal.any([signal,AbortSignal.timeout(8000)]):AbortSignal.timeout(8000)});
   if(!res.ok)throw Error(`Jev returned HTTP ${res.status}; no action sent`);
   const result=await res.json(),answer=result.answers?.next;
   if(!answer||!options.some(o=>o.id===answer.choice)||!Number.isFinite(answer.confidence))throw Error('Invalid Jev decision');

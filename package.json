@@ -4,6 +4,7 @@
   "private": true,
   "description": "A model-independent Slay the Spire 2 controller with Jev fast decisions and explicit planner handoffs",
   "type": "module",
+  "exports": {".": "./src/controller.mjs"},
   "license": "MIT",
   "engines": {"node": ">=22"},
   "bin": {"spire-jev": "bin/spire.mjs"},

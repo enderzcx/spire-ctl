@@ -99,12 +99,12 @@ export function route(s,options=actions(s)) {
   return {kind:'jev',reason:'Ready combat: choose among legal card actions'};
 }
 
-export function createGame(endpoint=process.env.SPIRE_API_URL??'http://127.0.0.1:15526/api/v1/singleplayer',fetcher=fetch) {
+export function createGame(endpoint=process.env.SPIRE_API_URL??'http://127.0.0.1:15526/api/v1/singleplayer',fetcher=fetch,signal) {
   const url=new URL(endpoint);
   if(!['127.0.0.1','localhost','[::1]'].includes(url.hostname)||url.protocol!=='http:')throw Error('Game bridge must be loopback HTTP');
   async function request(command) {
     const res=await fetcher(url,{method:command?'POST':'GET',headers:command?{'Content-Type':'application/json'}:undefined,
-      body:command?JSON.stringify(command):undefined,signal:AbortSignal.timeout(8000)});
+      body:command?JSON.stringify(command):undefined,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(8000)]):AbortSignal.timeout(8000)});
     const data=await res.json();
     if(!res.ok||data.status==='error'||data.error)throw Error(`Game rejected request: ${JSON.stringify(data)}`);
     return data;
