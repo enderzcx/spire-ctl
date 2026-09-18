@@ -96,3 +96,25 @@ test('provider cannot inject commands and receives only explicit state/options',
   await assert.rejects(choose(s(),options,{apiKey:'fake-test-key',fetcher:fake}),/Invalid/);
   assert.equal(body.state.player.hp,40);assert.equal(JSON.stringify(body).includes('fake-test-key'),false);
 });
+test('menu options expose the supported new-run path and refuse destructive ones',()=>{
+  const main={state_type:'menu',menu_screen:'main',options:['continue','abandon_run','singleplayer','multiplayer','compendium','timeline','settings','quit']};
+  assert.deepEqual(actions(main).map(a=>a.command.option),['continue','singleplayer','compendium','settings']);
+  const mode={state_type:'menu',menu_screen:'singleplayer',options:[{name:'standard',enabled:true},{name:'daily',enabled:false},{name:'custom',enabled:false},{name:'back',enabled:true}]};
+  assert.deepEqual(actions(mode).map(a=>a.command.option),['standard','back']);
+  const pick={state_type:'menu',menu_screen:'character_select',options:[
+    {name:'IRONCLAD',enabled:true},{name:'SILENT',enabled:true},{name:'REGENT',enabled:false},
+    {name:'confirm',enabled:true},{name:'embark',enabled:true},{name:'back',enabled:true}]};
+  assert.deepEqual(actions(pick).map(a=>a.command.option),['IRONCLAD','SILENT','confirm','embark','back']);
+  // A disabled character is never advertised.
+  assert.ok(!actions(pick).some(a=>a.command.option==='REGENT'));
+});
+test('rewards advertise claims first and mark an unclaimed exit',()=>{
+  const r={state_type:'rewards',run:{act:1,floor:1},player:{hp:70,gold:0},rewards:{items:[
+    {index:0,type:'gold',description:'14 gold'},{index:1,type:'card',description:'add a card'}],can_proceed:true}};
+  const list=actions(r);
+  assert.deepEqual(list.map(a=>a.command.action),['claim_reward','claim_reward','proceed']);
+  assert.match(list.at(-1).label,/without claiming/);
+  const empty={...r,rewards:{items:[],can_proceed:true}};
+  assert.deepEqual(actions(empty).map(a=>a.command.action),['proceed']);
+  assert.equal(actions(empty)[0].label,'Proceed');
+});

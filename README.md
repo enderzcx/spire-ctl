@@ -17,6 +17,7 @@
 | 场景 | 谁处理 |
 |---|---|
 | 动画结算、旧状态核对 | 程序等待 |
+| 开新局（单机 → 标准 → 角色 → 启程） | 主模型/所有者授权 |
 | 已知攻击能被一手牌完全挡下（无副作用） | 程序出牌 |
 | 本回合继续打数值与目标都明确的攻击牌 | 程序连续执行 |
 | 普通战斗中的下一手牌 | Jev |
@@ -81,6 +82,16 @@ node --env-file=.env bin/spire.mjs state
 ```
 
 `state` 只观察。它返回当前局面、可选动作和本次状态标识。主模型应先读取 [操作合同](docs/AGENT.md)。
+
+从终局界面开新局走已支持的正规入口（不会放弃存档，也不会碰设置或多人）：
+
+```sh
+node bin/spire.mjs state            # game_over -> game_over 只有 main_menu
+node bin/spire.mjs act STATE 0      # 回到主菜单
+# 依次：singleplayer -> standard -> 选角色 -> embark
+```
+
+`menu` 状态只广告这些安全动作：主菜单的 `continue/singleplayer/compendium/settings`、单人子菜单的 `standard/back`、角色选择的已解锁角色与 `confirm/embark/back`。`abandon_run`、`quit`、`multiplayer`、`daily`、`custom` 和锁定的时间线一律不出现在动作列表里。
 
 ### 3. 交给主模型
 

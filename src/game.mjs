@@ -33,7 +33,11 @@ export function actions(s,{deduplicate=true}={}) {
     add({action:'end_turn'},'End turn');
   } else if(s.state_type==='rewards') {
     for(const r of s.rewards.items??[])add({action:'claim_reward',index:r.index},`${r.type}: ${r.description}`);
-    if(s.rewards.can_proceed)add({action:'proceed'},'Proceed');
+    // Leaving with unclaimed rewards is irreversible. `proceed` stays visible
+    // for the cases where a reward is deliberately declined (a skipped card or
+    // a full potion belt), but it is advertised last and labelled as such.
+    if(s.rewards.can_proceed)add({action:'proceed'},
+      (s.rewards.items??[]).length?'Proceed without claiming the remaining rewards':'Proceed');
   } else if(s.state_type==='card_reward') {
     for(const c of s.card_reward.cards??[])add({action:'select_card_reward',card_index:c.index},`${c.name}: ${c.description}`);
     if(s.card_reward.can_skip)add({action:'skip_card_reward'},'Skip card reward');
@@ -66,10 +70,29 @@ export function actions(s,{deduplicate=true}={}) {
     // can_proceed describes the button before that close, not this compound action.
     if(s.shop&&!s.shop.error)add({action:'proceed'},'Close inventory and leave shop');
   } else if(s.state_type==='menu') {
-    // No starting/abandoning runs, quitting, profile deletion, or multiplayer.
-    for(const o of s.options??[]) {
-      const name=typeof o==='string'?o:o.name;
-      if(name==='continue' && (typeof o==='string'||o.enabled!==false))add({action:'menu_select',option:name},'Continue existing run');
+    // Menu options are advertised so a harness can walk the supported new-run
+    // path: singleplayer -> standard -> character_select -> embark. Starting a
+    // run is a deliberate, owner-authorized action; nothing here abandons a run,
+    // quits the game, touches profiles or enters multiplayer, and `continue`
+    // stays read-only (it only resumes an existing run).
+    const menu=s.menu_screen??'main';
+    const entries=(s.options??[]).map(o=>typeof o==='string'?{name:o,enabled:true}:o);
+    const allowed=new Set(menu==='main'
+      ?['continue','singleplayer','compendium','settings']
+      :menu==='singleplayer'?['standard','back']
+        :menu==='character_select'?['confirm','embark','back']
+          :menu==='profile_select'?['back']
+            :['back']);
+    for(const entry of entries) {
+      const name=entry?.name;
+      if(typeof name!=='string'||entry.enabled===false)continue;
+      // Clicking a character only moves the selection; it cannot start a run on
+      // its own, so every unlocked name stays available on that screen.
+      if(menu==='character_select'&&/^[A-Z][A-Z_]+$/.test(name))add({action:'menu_select',option:name},`Character: ${name}`);
+      else if(!allowed.has(name))continue;
+      else if(name==='continue')add({action:'menu_select',option:name},'Continue existing run');
+      else if(name==='embark')add({action:'menu_select',option:name},'Start a new run with the selected character');
+      else add({action:'menu_select',option:name},`Menu: ${name}`);
     }
   }
   return out;
