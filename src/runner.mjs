@@ -4,6 +4,7 @@ import {actions,inCombat,route,stateId,incomingDamage} from './game.mjs';
 import {localPolicy,nextLocalPlay,verifyStableProposal} from './policy.mjs';
 import {loadStrategy,strategyApplies,strategyPreference,seenHandoff,noteHandoff} from './strategy.mjs';
 import {mechanicalPlan} from './mechanical.mjs';
+import {planCandidates} from './planning.mjs';
 
 export function envelope(state){
   const options=actions(state),incoming=inCombat(state)?incomingDamage(state):null;
@@ -127,7 +128,11 @@ export async function battle(game,decide,{dir,control=dir,max=60,record=recorder
       if(!option){
         const candidates=env.options.filter(o=>o.command.action!=='use_potion');
         const shortlist=decision?.kind==='shortlist'?decision:null;
-        const d=await decide(s,candidates,shortlist);
+        // Short-plan mode is opt-in so single-step and planned decisions can be
+        // compared on the same board: SPIRE_CANDIDATES=1 builds a bounded set of
+        // verified prefixes and the adapter chooses among them.
+        const plans=process.env.SPIRE_CANDIDATES==='1'?planCandidates(s,candidates):null;
+        const d=await decide(s,candidates,shortlist,{candidates:plans,strategy:agreed});
         tokens+=d.usage?.input_tokens??0;
         // Requests actually sent to the fast model, including the narrowed
         // retry and the stability probe, so a per-turn request count is real.

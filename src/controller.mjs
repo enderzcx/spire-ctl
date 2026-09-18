@@ -27,7 +27,7 @@ export function createController({endpoint=process.env.SPIRE_API_URL??'http://12
     act:(expected,id,{signal}={})=>mutate(signal,(g,opts)=>execute(g,expected,id,opts)),
     // The fast-model seam is injectable so the shortlist hand-off can be tested
     // without a provider; production keeps the real adapter.
-    battle:(max=60,{signal}={})=>mutate(signal,(g,opts)=>battle(g,(s,o,shortlist)=>decide(s,o,{apiKey,signal,shortlist}),{...opts,max})),
+    battle:(max=60,{signal}={})=>mutate(signal,(g,opts)=>battle(g,(s,o,shortlist,extra={})=>decide(s,o,{apiKey,signal,shortlist,...extra}),{...opts,max})),
     plan:(plan,{signal}={})=>mutate(signal,(g,opts)=>runPlan(g,plan,opts)),
     // Mechanical progress only: free claims, fixed buttons, then stop.
     advance:(max=20,{signal}={})=>mutate(signal,(g,opts)=>advance(g,{...opts,max})),
