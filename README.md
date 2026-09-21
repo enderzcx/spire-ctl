@@ -109,6 +109,18 @@ CLI 全部命令：
 
 `battle` 里可以挂一个可选的快速决策模型（默认 TypeSafe Jev）来接管普通战斗回合；**不用它完全可以**——`state` + `act` + `seq` 就是完整闭环。详见 [docs/AGENT.md](docs/AGENT.md) 与 [决策层级](docs/DECISION-LEVELS.md)。
 
+## DSH 原生插件（可选）
+
+用 DeepSeek Harness 时可以装 [dsh-spire-ctl](https://github.com/enderzcx/dsh-spire-ctl)，把 CLI 包成原生工具（含 `spire_seq`），不用拼 shell 命令。
+
+```sh
+dsh plugin --profile web add \
+  'https://github.com/enderzcx/spire-ctl/archive/<CORE_COMMIT>.tar.gz' \
+  'https://github.com/enderzcx/dsh-spire-ctl/archive/refs/tags/v0.3.0.tar.gz'
+```
+
+**核心不依赖 DSH。** 插件只注册工具和配置，不复制任何游戏逻辑——这条纪律由插件仓库自己的测试守住。
+
 ## 从终局开新局
 
 正规入口，不碰存档、不碰设置、不进多人：
