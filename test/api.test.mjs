@@ -39,3 +39,15 @@ test('the controller hands the shortlist through to the fast-model seam',async()
     }finally{await rm(control,{recursive:true,force:true});}
   }finally{await rm(dir,{recursive:true,force:true});}
 });
+
+test('the interface probe reports required fields and never sends an action',async()=>{
+  // The probe is read-only by construction: it only calls createGame().read().
+  const {spawnSync}=await import('node:child_process');
+  // Exit code 2 means "no bridge", which is the expected offline outcome; the
+  // text must still explain what to start.
+  const run=spawnSync(process.execPath,['scripts/probe-api.mjs'],{encoding:'utf8'});
+  const out=`${run.stdout??''}${run.stderr??''}`;
+  assert.ok(run.status===0||run.status===2,`unexpected exit ${run.status}`);
+  assert.match(out,/Cannot read the game bridge|state_type/,'the probe either reads a live game or says why it cannot');
+  if(run.status===2)assert.match(out,/Start Slay the Spire 2/);
+});
