@@ -323,3 +323,42 @@ test('a sequence also covers a non-combat screen such as a shop run',async()=>{
   assert.equal(seen[0].action,'shop_purchase');
   assert.equal(seen[1].index,13);
 });
+
+test('a sequence can name the card instead of trusting a shifting index',async()=>{
+  const {sequence}=await import('../src/runner.mjs');
+  // Two Strikes and a Defend: index-based steps would play index 0 twice, and
+  // the second step would land on whatever slid into that slot.
+  const combat=()=>({state_type:'monster',run:{act:1,floor:3,ascension:0},
+    player:{hp:70,max_hp:80,block:0,energy:3,max_energy:3,potions:[],
+      hand:[{index:0,id:'STRIKE_IRONCLAD',name:'打击',cost:'1',type:'Attack',can_play:true,target_type:'AnyEnemy',description:'造成6点伤害。'},
+        {index:1,id:'DEFEND_IRONCLAD',name:'防御',cost:'1',type:'Skill',can_play:true,target_type:'Self',description:'获得5点格挡。'},
+        {index:2,id:'STRIKE_IRONCLAD',name:'打击',cost:'1',type:'Attack',can_play:true,target_type:'AnyEnemy',description:'造成6点伤害。'}],
+      draw_pile_count:2,discard_pile_count:0,exhaust_pile_count:0,relics:[]},
+    battle:{round:1,turn:1,ready_for_action:true,action_running:false,action_queue_empty:true,
+      enemies:[{entity_id:'E_0',combat_id:1,name:'E',hp:30,max_hp:30,block:0,status:[],intents:[{type:'Attack',label:'8'}]}]}});
+  const seen=[];
+  const game={read:async()=>combat(),settled:async()=>combat(),send:async p=>{seen.push(p);return{status:'ok'};}};
+  const result=await sequence(game,[
+    {card:'STRIKE_IRONCLAD',target:'E_0'},
+    {card:'DEFEND_IRONCLAD'}
+  ],{dir:await mkdtemp(join(tmpdir(),'seq4-'))});
+  assert.equal(result.reason,'sequence_done');
+  assert.deepEqual(seen.map(p=>p.card_index),[0,1],'the named cards, not the same slot twice');
+  assert.equal(seen[1].action,'play_card');
+});
+
+test('a sequence stops when the named card is not in hand',async()=>{
+  const {sequence}=await import('../src/runner.mjs');
+  const combat={state_type:'monster',run:{act:1,floor:3,ascension:0},
+    player:{hp:70,max_hp:80,block:0,energy:3,max_energy:3,potions:[],
+      hand:[{index:0,id:'DEFEND_IRONCLAD',name:'防御',cost:'1',type:'Skill',can_play:true,target_type:'Self',description:'获得5点格挡。'}],
+      draw_pile_count:2,discard_pile_count:0,exhaust_pile_count:0,relics:[]},
+    battle:{round:1,turn:1,ready_for_action:true,action_running:false,action_queue_empty:true,
+      enemies:[{entity_id:'E_0',combat_id:1,name:'E',hp:30,max_hp:30,block:0,status:[],intents:[]}]}};
+  let sends=0;
+  const game={read:async()=>combat,settled:async()=>combat,send:async()=>{sends++;return{status:'ok'};}};
+  const result=await sequence(game,[{card:'STRIKE_IRONCLAD',target:'E_0'}],{dir:await mkdtemp(join(tmpdir(),'seq5-'))});
+  assert.equal(result.reason,'card_not_in_hand');
+  assert.equal(sends,0);
+  assert.equal(result.hand[0].id,'DEFEND_IRONCLAD');
+});

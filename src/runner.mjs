@@ -156,7 +156,24 @@ export async function sequence(game,steps,{dir,control=dir,max=12,record=recorde
     const options=actions(s);
     // A step is a selector over the command the game advertises, so a shifted
     // hand index or a dead target cannot silently select a different card.
-    const option=options.find(candidate=>Object.entries(step).every(([key,value])=>
+    //
+    // `card_index` is positional: playing one card shifts every index after it,
+    // so a caller that says "index 2, then index 2" can play two different cards.
+    // A step may name the card instead - `card` is the card's own id, which the
+    // bridge reports as STRIKE_IRONCLAD, POMMEL_STRIKE and so on - and the
+    // position is resolved freshly from the settled state for each step.
+    let selector=step;
+    if(step.card!==undefined){
+      const hand=s.player?.hand??[];
+      const wanted=hand.filter(card=>card.id===step.card
+        &&(step.upgraded===undefined||Boolean(card.is_upgraded)===Boolean(step.upgraded)));
+      if(!wanted.length)return {reason:'card_not_in_hand',steps:index,performed,...env,
+        unmatched:step,hand:hand.map(card=>({id:card.id,index:card.index,upgraded:Boolean(card.is_upgraded)})),
+        instruction:'The named card is not in hand; re-read and decide again'};
+      const {card,upgraded,...rest}=step;
+      selector={...rest,card_index:wanted[0].index};
+    }
+    const option=options.find(candidate=>Object.entries(selector).every(([key,value])=>
       key==='id'?candidate.id===value:JSON.stringify(candidate.command?.[key])===JSON.stringify(value)));
     if(!option)
       return {reason:'step_not_advertised',steps:index,performed,...env,
