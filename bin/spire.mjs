@@ -31,6 +31,20 @@ async function main(){
     return controller.seq(payload.steps,{expectedStateId:payload.expected_state_id??payload.expectedStateId??null,
       source:'caller'});
   }
+  if(command==='doctor'){
+    // Read-only diagnosis by default; --install-mod --yes writes the two mod
+    // files after verifying them against the package's SHA256SUMS.
+    const {diagnose,installMod}=await import('../scripts/doctor.mjs');
+    const flag=name=>{const i=args.indexOf(name);return i>=0?args[i+1]??true:null;};
+    if(args.includes('--install-mod')){
+      const packageDir=flag('--install-mod');
+      if(typeof packageDir!=='string')throw Error('--install-mod needs a package directory');
+      const {execFile}=await import('node:child_process');
+      const listProcesses=()=>new Promise(resolve=>execFile('ps',['-ax'],(error,stdout)=>resolve(stdout??'')));
+      return installMod(packageDir,{yes:args.includes('--yes'),listProcesses});
+    }
+    return diagnose({endpoint:process.env.SPIRE_API_URL});
+  }
   if(command==='advance')return controller.advance(Number(args[0]??20));
   if(command==='clear-halt'){
     if(args.length!==1)throw Error('Read and inspect state, then clear-halt STATE_ID');
@@ -41,7 +55,7 @@ async function main(){
     return controller.saveStrategy(JSON.parse(await readFile(args[0],'utf8')));
   }
   if(command==='strategy')return controller.strategy();
-  return {usage:['state','act STATE_ID OPTION_ID','seq STEPS.json','plan PLAN.json','battle [MAX_STEPS] [STRATEGY.json]','advance [MAX_STEPS]','clear-halt STATE_ID','save-strategy STRATEGY.json','strategy'],
+  return {usage:['state','act STATE_ID OPTION_ID','seq STEPS.json','plan PLAN.json','battle [MAX_STEPS] [STRATEGY.json]','advance [MAX_STEPS]','clear-halt STATE_ID','save-strategy STRATEGY.json','strategy','doctor [--install-mod DIR --yes]'],
     note:'Read docs/AGENT.md before playing. advance only performs mechanical steps and stops at a decision.'};
 }
 main().then(r=>console.log(JSON.stringify(r,null,2))).catch(e=>{console.error(JSON.stringify({error:e.message}));process.exitCode=1;});

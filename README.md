@@ -12,6 +12,17 @@
     STS2 本地桥接（Mod）
 ```
 
+## 最省事的安装方式
+
+把 [安装提示词](docs/INSTALL-PROMPT.md) 整段复制给你的 agent，它自己装完并验证。
+
+```sh
+dsh plugin --profile web add github:enderzcx/spire-ctl   # 控制器（同时是 CLI 和 DSH 插件）
+node bin/spire.mjs doctor                                # 体检：找不到游戏/Mod 没装/桥接没起，都会说清楚
+```
+
+Mod 是唯一需要写进游戏目录的一步，`doctor --install-mod` 会先给计划、校验 SHA256、并拒绝在游戏运行时写入。
+
 ## 它保证什么
 
 这个项目的价值不在"能玩"，而在**出错时的行为**：
