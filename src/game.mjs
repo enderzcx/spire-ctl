@@ -2,7 +2,31 @@ import {createHash} from 'node:crypto';
 import {incomingDamage as combatIncoming} from './combat.mjs';
 
 export const inCombat=s=>['monster','elite','boss'].includes(s.state_type);
-export const stateId=s=>createHash('sha256').update(JSON.stringify(s)).digest('hex').slice(0,24);
+// The identity of a state is what a caller decides on, not what the screen is
+// painting right now. The transform screen cycles its "what this card would
+// become" preview on every read - two consecutive reads of an idle screen
+// returned different preview_cards - and hashing that made every action
+// unverifiable: the settle check compared two ids that could never match, called
+// it "no settled state transition", and halted. A caller then could not clear the
+// halt either, because clearing requires an id that matches, and the id moved
+// underneath it. Live previews are therefore excluded from the identity.
+const VOLATILE_FIELDS={card_select:['preview_cards','preview_showing']};
+
+export function stableShape(state){
+  if(!state||typeof state!=='object')return state;
+  let copy=state;
+  for(const [section,fields] of Object.entries(VOLATILE_FIELDS)){
+    const block=state[section];
+    if(!block||typeof block!=='object')continue;
+    if(!fields.some(field=>field in block))continue;
+    if(copy===state)copy={...state};
+    copy[section]={...block};
+    for(const field of fields)delete copy[section][field];
+  }
+  return copy;
+}
+
+export const stateId=s=>createHash('sha256').update(JSON.stringify(stableShape(s))).digest('hex').slice(0,24);
 export const delay=ms=>new Promise(r=>setTimeout(r,ms));
 
 export function actions(s,{deduplicate=true}={}) {
