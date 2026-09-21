@@ -1,8 +1,8 @@
 {
-  "name": "spire-jev",
-  "version": "0.2.1",
+  "name": "spire-ctl",
+  "version": "0.3.0",
   "private": true,
-  "description": "A model-independent Slay the Spire 2 controller with Jev fast decisions and explicit planner handoffs",
+  "description": "A verified control surface for Slay the Spire 2: a JSON state contract, legal actions, and no-replay execution for any agent harness",
   "type": "module",
   "exports": {
     ".": "./src/controller.mjs"
@@ -12,7 +12,7 @@
     "node": ">=22"
   },
   "bin": {
-    "spire-jev": "bin/spire.mjs"
+    "spirectl": "bin/spire.mjs"
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
@@ -20,6 +20,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/enderzcx/spire-jev.git"
+    "url": "https://github.com/enderzcx/spire-ctl.git"
   }
 }

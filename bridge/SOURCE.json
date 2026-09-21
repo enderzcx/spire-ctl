@@ -1,8 +1,0 @@
-{
-  "repository": "https://github.com/Gennadiyev/STS2MCP",
-  "commit": "55e064850a68f3b4cde7e5fd525bf9b2dec4e885",
-  "license": "MIT",
-  "tested_game_version": "v0.107.1",
-  "tested_platform": "macOS arm64",
-  "patch": "local.patch"
-}

@@ -14,7 +14,10 @@ export function createController({endpoint=process.env.SPIRE_API_URL??'http://12
   decide=choose,openGame=null,controlDir=null}={}){
   const dir=resolve(runtimeDir),url=new URL(endpoint);
   createGame(endpoint);
-  const control=controlDir??join(homedir(),'.local','state','spire-jev',`loopback-${url.port||80}`);
+  // The lock and the persistent stop marker live per endpoint, not per caller.
+  // Renaming this directory would let an old and a new build hold two different
+  // locks against the same game, so it is a compatibility surface of its own.
+  const control=controlDir??process.env.SPIRE_CONTROL_DIR??join(homedir(),'.local','state','spire-ctl',`loopback-${url.port||80}`);
   const game=signal=>openGame?openGame(signal):createGame(endpoint,fetch,signal);
   async function mutate(signal,fn){
     signal?.throwIfAborted();

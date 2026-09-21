@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {actions,route,stateId,incomingDamage,createGame} from '../src/game.mjs';
 import {execute,battle,withLock,envelope} from '../src/runner.mjs';
 import {choose} from '../src/jev.mjs';
+import {createController} from '../src/controller.mjs';
 
 const s=()=>({state_type:'monster',run:{act:1,floor:4},battle:{ready_for_action:true,enemies:[{hp:12,entity_id:'E_0',name:'Enemy',intents:[{type:'Attack',label:'5'}]}]},player:{hp:40,max_hp:80,block:0,energy:3,hand:[{id:'STRIKE',index:0,can_play:true,target_type:'AnyEnemy',name:'Strike',description:'Deal 6 damage',cost:'1'}],potions:[]}});
 const temporary=async fn=>{const dir=await mkdtemp(join(tmpdir(),'spire-test-'));try{await fn(dir);}finally{await rm(dir,{recursive:true,force:true});}};
@@ -182,3 +183,24 @@ test('an action records who decided it, so agent moves are not counted as takeov
   assert.equal(rows.find(row=>row.event==='dispatch').source,'agent');
   assert.equal(rows.find(row=>row.event==='verified').source,'agent');
 }));
+
+test('the control directory is the lock surface, and the environment can move it',async()=>{
+  // Two builds that disagree about this directory would hold two different locks
+  // against the same game, so the environment override is the supported way to
+  // relocate it - and the migration story for the rename.
+  const dir=await mkdtemp(join(tmpdir(),'ctl-env-'));
+  const previous=process.env.SPIRE_CONTROL_DIR;
+  process.env.SPIRE_CONTROL_DIR=dir;
+  try{
+    const state=s();
+    const game={read:async()=>state,settled:async()=>state,send:async()=>({status:'ok'})};
+    const controller=createController({runtimeDir:await mkdtemp(join(tmpdir(),'rt-')),openGame:()=>game});
+    // A stop marker placed in the environment's directory must be respected:
+    // that proves the override, not the default path, is the control surface.
+    const {writeFile}=await import('node:fs/promises');
+    await writeFile(join(dir,'HALTED'),JSON.stringify({reason:'test'}));
+    await assert.rejects(()=>controller.act(stateId(state),'0'),/outcome unknown/);
+  }finally{
+    if(previous===undefined)delete process.env.SPIRE_CONTROL_DIR;else process.env.SPIRE_CONTROL_DIR=previous;
+  }
+});
