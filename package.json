@@ -5,7 +5,9 @@
   "description": "A verified control surface for Slay the Spire 2: a JSON state contract, legal actions, and no-replay execution for any agent harness",
   "type": "module",
   "exports": {
-    ".": "./src/controller.mjs"
+    ".": "./adapters/dsh.mjs",
+    "./controller": "./src/controller.mjs",
+    "./package.json": "./package.json"
   },
   "license": "MIT",
   "engines": {
@@ -16,10 +18,40 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "check": "node --check bin/spire.mjs && node --check src/game.mjs && node --check src/combat.mjs && node --check src/dispatch.mjs && node --check src/decision.mjs && node --check src/policy.mjs && node --check src/strategy.mjs && node --check src/mechanical.mjs && node --check src/planning.mjs && node --check src/effects.mjs && node --check src/input.mjs && node --check src/runner.mjs && node --check src/jev.mjs && node --check src/plan.mjs && node --check src/metrics.mjs && node --check src/controller.mjs && node --check scripts/dsh.mjs && node --check scripts/summarize.mjs && node --check scripts/metrics-jsonl.mjs && node --check scripts/probe-api.mjs && node --check src/contract.mjs"
+    "check": "node --check bin/spire.mjs && node --check src/game.mjs && node --check src/combat.mjs && node --check src/dispatch.mjs && node --check src/decision.mjs && node --check src/policy.mjs && node --check src/strategy.mjs && node --check src/mechanical.mjs && node --check src/planning.mjs && node --check src/effects.mjs && node --check src/input.mjs && node --check src/runner.mjs && node --check src/jev.mjs && node --check src/plan.mjs && node --check src/metrics.mjs && node --check src/controller.mjs && node --check scripts/dsh.mjs && node --check scripts/summarize.mjs && node --check scripts/metrics-jsonl.mjs && node --check scripts/probe-api.mjs && node --check src/contract.mjs && node --check adapters/dsh.mjs"
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/enderzcx/spire-ctl.git"
+  },
+  "main": "adapters/dsh.mjs",
+  "files": [
+    "adapters",
+    "bin",
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "docs"
+  ],
+  "dsh": {
+    "engines": {
+      "dsh": ">=0.1.5-rc.2"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "^0.1.5-rc.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-tools": "^0.1.5-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.2"
   }
 }
