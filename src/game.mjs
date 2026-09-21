@@ -32,7 +32,20 @@ export function actions(s,{deduplicate=true}={}) {
       } else if(['Self','AnyPlayer','AnyAlly','None','AllEnemies','RandomEnemy'].includes(p.target_type))add(base,label);
     }
     add({action:'end_turn'},'End turn');
-  } else if(s.state_type==='rewards') {
+  }
+  if(!inCombat(s)){
+    // A potion can be discarded outside combat: the bridge implements it as a
+    // plain PotionCmd.Discard, with no combat requirement. That matters because
+    // a full belt makes a potion reward unclaimable and leaves the rewards
+    // screen with nothing advertised that can free a slot - the run stops there
+    // with a reward it can neither take nor decline.
+    const slots=Number(s.player?.max_potion_slots??0);
+    const held=s.player?.potions??[];
+    if(slots>0&&held.length>=slots)
+      for(const p of held)add({action:'discard_potion',slot:p.slot},
+        `Discard potion ${p.name} (slot ${p.slot}) to free a slot`);
+  }
+  if(s.state_type==='rewards') {
     for(const r of s.rewards.items??[])add({action:'claim_reward',index:r.index},`${r.type}: ${r.description}`);
     // Leaving with unclaimed rewards is irreversible. `proceed` stays visible
     // for the cases where a reward is deliberately declined (a skipped card or
