@@ -122,3 +122,42 @@ export async function advance(game,{dir,control=dir,max=20,record=recorder(dir)}
   }
   return {reason:'step_budget',steps,...envelope(s)};
 }
+
+// A planned sequence of already-decided moves, executed with the same verified
+// transaction as `act`.
+//
+// This is not a model call and not a prediction: the caller states which moves
+// it intends, and each one is re-read from a settled state, matched against the
+// options the game actually advertises, and only then sent. A step that is no
+// longer advertised - because a card left the hand, the target died, or the
+// state changed under it - stops the sequence before anything is played. The
+// caller keeps the decision; the program keeps the legality check.
+export async function sequence(game,steps,{dir,control=dir,max=12,record=recorder(dir),source='caller',
+  expectedStateId=null}={}){
+  if(!Array.isArray(steps)||!steps.length)throw Error('steps must be a non-empty array');
+  if(steps.length>max)throw Error(`steps must be 1..${max}`);
+  let s=await game.settled();
+  if(expectedStateId&&expectedStateId!==stateId(s))
+    throw Error('Sequence expectedStateId does not match the live state');
+  const room=JSON.stringify(s.run),performed=[];
+  for(const [index,step] of steps.entries()){
+    const env=envelope(s);
+    if(!inCombat(s)||JSON.stringify(s.run)!==room)
+      return {reason:'left_combat',steps:index,performed,...env};
+    const options=actions(s);
+    // A step is a selector over the command the game advertises, so a shifted
+    // hand index or a dead target cannot silently select a different card.
+    const option=options.find(candidate=>Object.entries(step).every(([key,value])=>
+      key==='id'?candidate.id===value:JSON.stringify(candidate.command?.[key])===JSON.stringify(value)));
+    if(!option)
+      return {reason:'step_not_advertised',steps:index,performed,...env,
+        unmatched:step,
+        advertised:options.map(candidate=>({id:candidate.id,command:candidate.command,label:String(candidate.label).slice(0,60)})),
+        instruction:'The stated move is not advertised in the settled state; re-read and decide again'};
+    const next=await execute(game,stateId(s),option.id,{dir,control,record,source});
+    performed.push({step:index,action:option.command.action,label:String(option.label).slice(0,60),
+      state_id:stateId(next.state)});
+    s=next.state;
+  }
+  return {reason:'sequence_done',steps:steps.length,performed,...envelope(s)};
+}

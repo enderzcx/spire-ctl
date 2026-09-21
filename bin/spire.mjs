@@ -20,6 +20,17 @@ async function main(){
     const strategy=payload.strategy??payload;
     return controller.battle(max,{strategy,expectedStateId:payload.expected_state_id??payload.expectedStateId});
   }
+  if(command==='seq'){
+    // seq STATE_ID STEPS.json - or seq STEPS.json when no state id is given.
+    // Each step is a selector over the advertised command, e.g.
+    //   {"card_index":2} {"card_index":2,"target":"E_0"} {"action":"end_turn"}
+    const [maybeId,maybeFile]=args;
+    const file=maybeFile??maybeId;
+    const steps=JSON.parse(await readFile(file,'utf8'));
+    const payload=Array.isArray(steps)?{steps}:steps;
+    return controller.seq(payload.steps,{expectedStateId:payload.expected_state_id??payload.expectedStateId??null,
+      source:'caller'});
+  }
   if(command==='advance')return controller.advance(Number(args[0]??20));
   if(command==='clear-halt'){
     if(args.length!==1)throw Error('Read and inspect state, then clear-halt STATE_ID');
@@ -30,7 +41,7 @@ async function main(){
     return controller.saveStrategy(JSON.parse(await readFile(args[0],'utf8')));
   }
   if(command==='strategy')return controller.strategy();
-  return {usage:['state','act STATE_ID OPTION_ID','plan PLAN.json','battle [MAX_STEPS] [STRATEGY.json]','advance [MAX_STEPS]','clear-halt STATE_ID','save-strategy STRATEGY.json','strategy'],
+  return {usage:['state','act STATE_ID OPTION_ID','seq STEPS.json','plan PLAN.json','battle [MAX_STEPS] [STRATEGY.json]','advance [MAX_STEPS]','clear-halt STATE_ID','save-strategy STRATEGY.json','strategy'],
     note:'Read docs/AGENT.md before playing. advance only performs mechanical steps and stops at a decision.'};
 }
 main().then(r=>console.log(JSON.stringify(r,null,2))).catch(e=>{console.error(JSON.stringify({error:e.message}));process.exitCode=1;});

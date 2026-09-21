@@ -245,3 +245,43 @@ test('candidate menus keep end turn and extra targets',()=>{
   assert.ok(candidates.some(c=>c.title==='End turn'||c.option_id===options.find(o=>o.command.action==='end_turn')?.id));
   assert.ok(candidates.filter(c=>c.kind==='single').length>=options.filter(o=>o.command.action!=='use_potion').length);
 });
+
+test('a sequence re-reads and verifies each step, and stops when a step is gone',async()=>{
+  const {sequence}=await import('../src/runner.mjs');
+  const combat=()=>({
+    state_type:'monster',run:{act:1,floor:3,ascension:0},
+    player:{hp:70,max_hp:80,block:0,energy:3,max_energy:3,potions:[],
+      hand:[{index:0,name:'打击',cost:'1',type:'Attack',can_play:true,target_type:'AnyEnemy',description:'造成6点伤害。'},
+        {index:1,name:'防御',cost:'1',type:'Skill',can_play:true,target_type:'Self',description:'获得5点格挡。'}],
+      draw_pile_count:3,discard_pile_count:0,exhaust_pile_count:0,relics:[]},
+    battle:{round:1,turn:1,ready_for_action:true,action_running:false,action_queue_empty:true,
+      enemies:[{entity_id:'E_0',combat_id:1,name:'E',hp:20,max_hp:20,block:0,status:[],intents:[{type:'Attack',label:'8'}]}]}
+  });
+  const seen=[];
+  const game={read:async()=>combat(),settled:async()=>combat(),
+    send:async payload=>{seen.push(payload);return {status:'ok'};}};
+  const result=await sequence(game,[{card_index:0},{action:'end_turn'}],{dir:await mkdtemp(join(tmpdir(),'seq-'))});
+  assert.equal(result.reason,'sequence_done');
+  assert.equal(seen.length,2,'both steps were sent');
+  assert.equal(seen[0].action,'play_card');
+  assert.equal(result.performed[0].action,'play_card');
+  assert.equal(result.performed[1].action,'end_turn');
+});
+
+test('a sequence plays nothing once a stated move is no longer advertised',async()=>{
+  const {sequence}=await import('../src/runner.mjs');
+  // Only end turn exists: the stated card move must not be guessed at.
+  const quiet={state_type:'monster',run:{act:1,floor:3,ascension:0},
+    player:{hp:70,max_hp:80,block:0,energy:0,max_energy:3,potions:[],hand:[],
+      draw_pile_count:0,discard_pile_count:0,exhaust_pile_count:0,relics:[]},
+    battle:{round:1,turn:1,ready_for_action:true,action_running:false,action_queue_empty:true,
+      enemies:[{entity_id:'E_0',combat_id:1,name:'E',hp:20,max_hp:20,block:0,status:[],intents:[]}]}};
+  let sends=0;
+  const game={read:async()=>quiet,settled:async()=>quiet,send:async()=>{sends++;return{status:'ok'};}};
+  const result=await sequence(game,[{card_index:0},{action:'end_turn'}],{dir:await mkdtemp(join(tmpdir(),'seq2-'))});
+  assert.equal(result.reason,'step_not_advertised');
+  assert.equal(sends,0,'nothing is played when the stated move is gone');
+  assert.equal(result.steps,0);
+  assert.deepEqual(result.unmatched,{card_index:0});
+  assert.ok(result.advertised.some(o=>o.command.action==='end_turn'),'the caller is told what is available');
+});

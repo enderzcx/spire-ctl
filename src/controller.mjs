@@ -3,7 +3,7 @@ import {homedir} from 'node:os';
 import {access,rm} from 'node:fs/promises';
 import {createGame,stateId} from './game.mjs';
 import {envelope,withLock,execute} from './dispatch.mjs';
-import {battle,advance} from './runner.mjs';
+import {battle,advance,sequence} from './runner.mjs';
 import {runPlan,projection} from './plan.mjs';
 import {choose} from './jev.mjs';
 import {bindStrategy,saveStrategy,loadStrategy} from './strategy.mjs';
@@ -31,6 +31,7 @@ export function createController({endpoint=process.env.SPIRE_API_URL??'http://12
     // without a provider; production keeps the real adapter.
     battle:(max=60,{signal,strategy,expectedStateId}={})=>mutate(signal,(g,opts)=>battle(g,(s,o,shortlist,extra={})=>decide(s,o,{apiKey,signal,shortlist,...extra}),{...opts,max,strategy,expectedStateId})),
     plan:(plan,{signal}={})=>mutate(signal,(g,opts)=>runPlan(g,plan,opts)),
+    seq:(steps,{signal,expectedStateId=null,source='caller'}={})=>mutate(signal,(g,opts)=>sequence(g,steps,{...opts,expectedStateId,source})),
     // Mechanical progress only: free claims, fixed buttons, then stop.
     advance:(max=20,{signal}={})=>mutate(signal,(g,opts)=>advance(g,{...opts,max})),
     clearHalt:(expected,{signal}={})=>mutate(signal,async g=>{
