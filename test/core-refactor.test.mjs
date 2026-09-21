@@ -306,3 +306,20 @@ test('shop items name themselves the same way whatever their category',async()=>
   assert.equal(state.player.potions[0].name,'Y');
   assert.equal(normalizeState({state_type:'map'}).state_type,'map','states without a shop are untouched');
 });
+
+test('a sequence also covers a non-combat screen such as a shop run',async()=>{
+  const {sequence}=await import('../src/runner.mjs');
+  const shop=()=>({state_type:'shop',run:{act:2,floor:20,ascension:0},
+    player:{hp:61,max_hp:80,gold:436,potions:[],relics:[]},
+    shop:{can_proceed:true,items:[
+      {index:7,category:'relic',price:242,is_stocked:true,can_afford:true,relic_id:'KUNAI',relic_name:'苦无'},
+      {index:13,category:'card_removal',price:75,is_stocked:true,can_afford:true}]}});
+  const seen=[];
+  const game={read:async()=>shop(),settled:async()=>shop(),send:async p=>{seen.push(p);return{status:'ok'};}};
+  const result=await sequence(game,[{action:'shop_purchase',index:7},{action:'shop_purchase',index:13}],
+    {dir:await mkdtemp(join(tmpdir(),'seq3-'))});
+  assert.equal(result.reason,'sequence_done','combat is not required');
+  assert.equal(seen.length,2);
+  assert.equal(seen[0].action,'shop_purchase');
+  assert.equal(seen[1].index,13);
+});

@@ -132,6 +132,13 @@ export async function advance(game,{dir,control=dir,max=20,record=recorder(dir)}
 // longer advertised - because a card left the hand, the target died, or the
 // state changed under it - stops the sequence before anything is played. The
 // caller keeps the decision; the program keeps the legality check.
+// Same run means the identifying fields the bridge provides have not changed.
+const sameRoom=(run,raw)=>{
+  if(raw==null)return true;
+  const before=JSON.parse(raw);
+  return ['act','floor','ascension'].every(key=>(before?.[key]??null)===(run?.[key]??null));
+};
+
 export async function sequence(game,steps,{dir,control=dir,max=12,record=recorder(dir),source='caller',
   expectedStateId=null}={}){
   if(!Array.isArray(steps)||!steps.length)throw Error('steps must be a non-empty array');
@@ -142,8 +149,10 @@ export async function sequence(game,steps,{dir,control=dir,max=12,record=recorde
   const room=JSON.stringify(s.run),performed=[];
   for(const [index,step] of steps.entries()){
     const env=envelope(s);
-    if(!inCombat(s)||JSON.stringify(s.run)!==room)
-      return {reason:'left_combat',steps:index,performed,...env};
+    // A sequence is not tied to combat: the same contract covers a shop run of
+    // purchases or a reward sweep. What must not change is the run itself, and
+    // every step still has to be advertised below.
+    if(!sameRoom(s.run,room))return {reason:'run_changed',steps:index,performed,...env};
     const options=actions(s);
     // A step is a selector over the command the game advertises, so a shifted
     // hand index or a dead target cannot silently select a different card.
@@ -155,9 +164,12 @@ export async function sequence(game,steps,{dir,control=dir,max=12,record=recorde
         advertised:options.map(candidate=>({id:candidate.id,command:candidate.command,label:String(candidate.label).slice(0,60)})),
         instruction:'The stated move is not advertised in the settled state; re-read and decide again'};
     const next=await execute(game,stateId(s),option.id,{dir,control,record,source});
+    // The envelope's state is the normalised consumer copy, so it must not be
+    // used to compute the next step's state id - a shop would hash differently
+    // and the second step would be rejected as stale. Re-read the raw state.
+    s=await game.settled();
     performed.push({step:index,action:option.command.action,label:String(option.label).slice(0,60),
-      state_id:stateId(next.state)});
-    s=next.state;
+      state_id:stateId(s)});
   }
   return {reason:'sequence_done',steps:steps.length,performed,...envelope(s)};
 }
