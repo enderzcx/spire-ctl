@@ -285,3 +285,24 @@ test('a sequence plays nothing once a stated move is no longer advertised',async
   assert.deepEqual(result.unmatched,{card_index:0});
   assert.ok(result.advertised.some(o=>o.command.action==='end_turn'),'the caller is told what is available');
 });
+
+test('shop items name themselves the same way whatever their category',async()=>{
+  const {normalizeItem,normalizeState}=await import('../src/contract.mjs');
+  const card=normalizeItem({index:0,category:'card',price:50,card_id:'IRON_WAVE',card_name:'铁斩波',card_description:'获得5点格挡。'});
+  assert.equal(card.name,'铁斩波');
+  assert.equal(card.description,'获得5点格挡。');
+  assert.equal(card.item_id,'IRON_WAVE');
+  assert.equal(card.card_name,'铁斩波','the raw field is preserved');
+  const relic=normalizeItem({index:7,category:'relic',price:242,relic_id:'KUNAI',relic_name:'苦无',relic_description:'每回合3张攻击牌获得1敏捷。'});
+  assert.equal(relic.name,'苦无');
+  const potion=normalizeItem({index:10,category:'potion',price:50,potion_id:'SKILL_POTION',potion_name:'技能药水',potion_description:'从3张随机技能牌中选择1张。'});
+  assert.equal(potion.name,'技能药水');
+  // A card removal has nothing to name, and must not gain a bogus one.
+  const removal=normalizeItem({index:13,category:'card_removal',price:75});
+  assert.equal(removal.name,undefined);
+  // The player's own potions already use the uniform names and pass through.
+  const state=normalizeState({shop:{items:[relic]},player:{potions:[{id:'X',name:'Y'}]}});
+  assert.equal(state.shop.items[0].name,'苦无');
+  assert.equal(state.player.potions[0].name,'Y');
+  assert.equal(normalizeState({state_type:'map'}).state_type,'map','states without a shop are untouched');
+});

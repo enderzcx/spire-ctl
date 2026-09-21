@@ -4,6 +4,7 @@ import {mkdir,readFile,writeFile,appendFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {readFileSync} from 'node:fs';
 import {actions,inCombat,route,stateId,incomingDamage} from './game.mjs';
+import {normalizeState} from './contract.mjs';
 
 export const PROTOCOL=4;
 export const CORE_VERSION=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8')).version;
@@ -11,7 +12,9 @@ export const CORE_VERSION=JSON.parse(readFileSync(new URL('../package.json',impo
 export function envelope(state){
   const options=actions(state),incoming=inCombat(state)?incomingDamage(state):null;
   const attackGap=incoming===null?null:Math.max(0,incoming-(state.player?.block??0));
-  return {implementation:{core_version:CORE_VERSION,protocol:PROTOCOL},state_id:stateId(state),route:route(state,options),options,state,
+  // The state id stays a hash of exactly what the game reported; the copy handed
+  // to consumers is normalised so every item names itself the same way.
+  return {implementation:{core_version:CORE_VERSION,protocol:PROTOCOL},state_id:stateId(state),route:route(state,options),options,state:normalizeState(state),
     tactical_facts:inCombat(state)?{displayed_attack_damage:incoming,block_needed_for_displayed_attacks:attackGap,
       note:'Current displayed attacks only; excludes future card effects and end-turn triggers.'}:undefined};
 }
