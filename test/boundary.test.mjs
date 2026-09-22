@@ -2,6 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 
 // The package is both a CLI and a DSH plugin. That only stays honest if the
 // runtime path never reaches for the harness: a plain harness that shells out to
@@ -9,7 +10,10 @@ import {join} from 'node:path';
 // may start importing harness types. The adapter may import the core; never the
 // other way around.
 
-const root=new URL('..',import.meta.url).pathname;
+// fileURLToPath, not .pathname: pathname keeps percent-escapes, so a checkout
+// under any non-ASCII directory (a Chinese folder name, for one) resolves to a
+// path that does not exist and every assertion here fails for the wrong reason.
+const root=fileURLToPath(new URL('..',import.meta.url));
 const read=path=>readFile(join(root,path),'utf8');
 
 test('no core module imports the DSH adapter',async()=>{
